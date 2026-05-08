@@ -10,7 +10,7 @@ Create one watcher per source entity through the Home Assistant config flow:
 - **Name**: used for the output entity IDs.
 - **Source entity**: entity to observe.
 - **Artist attribute**: optional media artist attribute, default `media_artist`.
-- **Watcher type**: `game`, `media`, or `activity`.
+- **Watcher type**: `game`, `media`, or `activity`. Game and activity watchers prefer title-like attributes (for example `media_title`, `game_title`, `game_name`, `app_name`, or `activity`) before falling back to the entity state, so sources such as a PS5 entity store the actual played title instead of only a generic state like `playing`.
 - **Retention days**: optional value used by manual cleanup; empty means unlimited retention.
 
 ## Persistence
@@ -37,15 +37,20 @@ For a watcher named `Living Room Media`, ETM creates:
 The sidebar panel **Entity Title Mapper** lists all watcher entries, shows unmapped
 entries (`enum = 0`) first, lets admins assign enum values, and supports manual deletion.
 
+Each watcher also has an **Add/update** form. Use it to type a title manually and assign
+an enum even before ETM has seen that title. The form is pre-filled with the current
+title when one is available, so a PS5/game watcher can quickly map the current game and
+will keep all previously seen or manually added games in the table.
+
 ## Services
 
 ### `etm.set_enum`
 
-Assign an enum value to a key.
+Create or update a key and assign an enum value. This can be used to pre-map a game/title before it is observed automatically.
 
 ```yaml
 entry_id: "01J..."
-key: "Artist - Title"
+key: "Astro's Playroom"
 enum: 7
 ```
 
@@ -55,7 +60,7 @@ Delete a key from a watcher.
 
 ```yaml
 entry_id: "01J..."
-key: "Artist - Title"
+key: "Astro's Playroom"
 ```
 
 ### `etm.clear_old`

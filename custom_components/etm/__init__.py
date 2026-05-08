@@ -58,6 +58,31 @@ CLEAR_OLD_SCHEMA = vol.Schema(
     }
 )
 
+TITLE_ATTRIBUTE_CANDIDATES = {
+    "game": (
+        "media_title",
+        "title",
+        "game_title",
+        "game_name",
+        "app_title",
+        "app_name",
+        "activity",
+        "activity_name",
+    ),
+    "media": ("media_title", "title", "media_content_id", "friendly_name"),
+    "activity": ("activity", "activity_name", "media_title", "title", "app_name"),
+}
+IGNORED_RAW_VALUES = {
+    "",
+    "unknown",
+    "unavailable",
+    "none",
+    "off",
+    "idle",
+    "standby",
+}
+
+
 
 class WatcherRuntime:
     """Runtime state for one watcher config entry."""
@@ -132,18 +157,33 @@ class WatcherRuntime:
 
     def key_from_state(self, state: State) -> str | None:
         """Build the raw key string from a Home Assistant state."""
-        title = state.attributes.get("media_title") or state.attributes.get("friendly_name")
-        if not title or self.entry.data[CONF_WATCHER_TYPE] != "media":
-            title = state.state
-        title = str(title).strip()
-        if not title or title in {"unknown", "unavailable", "None"}:
+        watcher_type = self.entry.data[CONF_WATCHER_TYPE]
+        title = self._title_from_attributes(state, watcher_type) or self._clean_value(state.state)
+        if title is None:
             return None
 
         artist_attr = self.entry.data.get(CONF_ARTIST_ATTRIBUTE) or DEFAULT_ARTIST_ATTRIBUTE
-        artist = state.attributes.get(artist_attr)
-        if artist:
-            return f"{str(artist).strip()} - {title}"
+        artist = self._clean_value(state.attributes.get(artist_attr))
+        if watcher_type == "media" and artist:
+            return f"{artist} - {title}"
         return title
+
+    def _title_from_attributes(self, state: State, watcher_type: str) -> str | None:
+        """Return the first useful title-like attribute for a watcher type."""
+        for attribute in TITLE_ATTRIBUTE_CANDIDATES[watcher_type]:
+            value = self._clean_value(state.attributes.get(attribute))
+            if value is not None:
+                return value
+        return None
+
+    def _clean_value(self, value: Any) -> str | None:
+        """Normalise a candidate key value and drop unavailable/idling values."""
+        if value is None:
+            return None
+        value = str(value).strip()
+        if value.lower() in IGNORED_RAW_VALUES:
+            return None
+        return value
 
     def as_panel_dict(self) -> dict[str, Any]:
         """Return serialisable watcher and entry data for the panel."""

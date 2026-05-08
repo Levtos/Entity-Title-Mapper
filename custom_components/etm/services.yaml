@@ -1,6 +1,6 @@
 set_enum:
   name: Set enum
-  description: Assign an enum value from 0 to 9 to a stored ETM key.
+  description: Create or update an ETM key and assign an enum value from 0 to 9.
   fields:
     entry_id:
       name: Watcher entry ID
@@ -8,7 +8,7 @@ set_enum:
       selector:
         text:
     key:
-      name: Key
+      name: Key or title
       required: true
       selector:
         text:
@@ -31,7 +31,7 @@ delete_entry:
       selector:
         text:
     key:
-      name: Key
+      name: Key or title
       required: true
       selector:
         text:
