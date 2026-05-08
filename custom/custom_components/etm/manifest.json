@@ -1,0 +1,14 @@
+{
+  "domain": "etm",
+  "name": "Entity Title Mapper",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [
+    "http"
+  ],
+  "documentation": "https://github.com/your-org/Entity-Title-Mapper",
+  "issue_tracker": "https://github.com/your-org/Entity-Title-Mapper/issues",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "0.1.0"
+}
