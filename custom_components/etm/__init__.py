@@ -166,6 +166,14 @@ class WatcherRuntime:
             "unmapped_titles": [entry.key for entry in entries if entry.enum == 0],
         }
 
+    async def async_set_current_enum(self, enum: int) -> None:
+        """Assign an enum to the currently active title."""
+        if self.current_key is None:
+            raise ServiceValidationError("No current ETM title is available to map")
+        await self.store.async_set_enum(self.current_key, enum)
+        self.refresh_current_enum()
+        self._notify_listeners()
+
     async def _async_source_changed(self, event: Event) -> None:
         """Handle source entity state changes."""
         new_state = event.data.get("new_state")

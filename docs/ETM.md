@@ -29,9 +29,10 @@ Every stored entry contains:
 
 For a watcher named `PlayStation Titles`, ETM creates:
 
-- `sensor.etm_playstation_titles_enum` – mapped enum value (`0`–`9`) for the current title.
+- `sensor.etm_playstation_titles_enum` – mapped enum value (`0`–`9`) for the current title. This is the automation-facing output.
 - `sensor.etm_playstation_titles_raw` – current raw title/key string.
 - `sensor.etm_playstation_titles_catalog` – diagnostic catalog entity whose state is the number of tracked titles; attributes expose `known_titles`, `mapped_titles`, and `unmapped_titles`.
+- `number.etm_playstation_titles_current_title_enum` – control for assigning the enum to the currently active title directly from the Home Assistant device/entity UI.
 
 ## Panel
 
@@ -55,7 +56,14 @@ Ratchet & Clank: Rift Apart = 3
 ```
 
 This lets a PlayStation title sensor keep a database of all played games while the main
-output sensor only returns the enum for the title that is currently active.
+output sensor only returns the enum for the title that is currently active. The enum is
+the small automation code you define (for example `0`, `1`, or `2`); any number of
+different titles can be tracked and assigned to those codes.
+
+If Home Assistant already shows a current title such as `Diablo IV` on the device page,
+open the `Current title enum` number entity and set it to the desired value. ETM then
+stores the mapping `Diablo IV -> <enum>` and `sensor.etm_playstation_titles_enum` will
+return that value whenever the raw title matches `Diablo IV`.
 
 ## Services
 

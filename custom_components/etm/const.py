@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "etm"
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "number"]
 
 CONF_SOURCE_ENTITY = "source_entity"
 CONF_ARTIST_ATTRIBUTE = "artist_attribute"
