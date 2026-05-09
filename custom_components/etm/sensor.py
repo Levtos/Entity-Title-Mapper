@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
@@ -18,7 +20,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up ETM sensors for a watcher."""
     runtime: WatcherRuntime = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([EtmEnumSensor(runtime), EtmRawSensor(runtime)])
+    async_add_entities([EtmEnumSensor(runtime), EtmRawSensor(runtime), EtmCatalogSensor(runtime)])
 
 
 class EtmBaseSensor(SensorEntity):
@@ -50,12 +52,13 @@ class EtmBaseSensor(SensorEntity):
         self.async_write_ha_state()
 
     @property
-    def extra_state_attributes(self) -> dict[str, str | None]:
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return shared diagnostic attributes."""
         return {
             ATTR_KEY: self._runtime.current_key,
             ATTR_WATCHER_ID: self._runtime.entry.entry_id,
             ATTR_WATCHER_NAME: self._runtime.name,
+            **self._runtime.catalog_summary(),
         }
 
 
@@ -97,3 +100,23 @@ class EtmRawSensor(EtmBaseSensor):
     def native_value(self) -> str | None:
         """Return the current raw key."""
         return self._runtime.current_key
+
+
+class EtmCatalogSensor(EtmBaseSensor):
+    """Diagnostic sensor exposing the stored title catalog for a watcher."""
+
+    _attr_name = "Catalog"
+    _attr_icon = "mdi:database-search"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, runtime: WatcherRuntime) -> None:
+        """Initialise the catalog sensor."""
+        super().__init__(runtime)
+        slug = runtime.entry.data[CONF_NAME].lower().replace(" ", "_")
+        self._attr_unique_id = f"{runtime.entry.entry_id}_catalog"
+        self.entity_id = f"sensor.etm_{slug}_catalog"
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of tracked title entries."""
+        return self._runtime.catalog_summary()["entry_count"]

@@ -1,7 +1,7 @@
 # ETM – Entity Title Mapper
 
 ETM is a Home Assistant custom integration that observes configured source entities,
-persists every raw key it sees, and exposes a numeric enum sensor for automations.
+persists every title/state value it sees for that one source entity, and exposes a numeric enum sensor for automations.
 
 ## Watchers
 
@@ -27,20 +27,35 @@ Every stored entry contains:
 
 ## Output entities
 
-For a watcher named `Living Room Media`, ETM creates:
+For a watcher named `PlayStation Titles`, ETM creates:
 
-- `sensor.etm_living_room_media_enum` – mapped enum value (`0`–`9`).
-- `sensor.etm_living_room_media_raw` – current raw key string.
+- `sensor.etm_playstation_titles_enum` – mapped enum value (`0`–`9`) for the current title.
+- `sensor.etm_playstation_titles_raw` – current raw title/key string.
+- `sensor.etm_playstation_titles_catalog` – diagnostic catalog entity whose state is the number of tracked titles; attributes expose `known_titles`, `mapped_titles`, and `unmapped_titles`.
 
 ## Panel
 
 The sidebar panel **Entity Title Mapper** lists all watcher entries, shows unmapped
 entries (`enum = 0`) first, lets admins assign enum values, and supports manual deletion.
 
-Each watcher also has an **Add/update** form. Use it to type a title manually and assign
-an enum even before ETM has seen that title. The form is pre-filled with the current
-title when one is available, so a PS5/game watcher can quickly map the current game and
-will keep all previously seen or manually added games in the table.
+Each watcher has its own title catalog. ETM does **not** create a new Home Assistant
+device for every PlayStation title; instead, all observed or manually maintained title
+variants are stored below the watcher and are exposed through the catalog sensor
+attributes.
+
+The panel provides two maintenance paths per watcher:
+
+- **Add/update one**: map the current or manually typed title to an enum.
+- **Import/update list**: paste a title list with one mapping per line, for example:
+
+```text
+Astro's Playroom = 1
+Diablo IV = 2
+Ratchet & Clank: Rift Apart = 3
+```
+
+This lets a PlayStation title sensor keep a database of all played games while the main
+output sensor only returns the enum for the title that is currently active.
 
 ## Services
 
@@ -52,6 +67,19 @@ Create or update a key and assign an enum value. This can be used to pre-map a g
 entry_id: "01J..."
 key: "Astro's Playroom"
 enum: 7
+```
+
+### `etm.import_entries`
+
+Create or update multiple title mappings for one watcher.
+
+```yaml
+entry_id: "01J..."
+entries:
+  - key: "Astro's Playroom"
+    enum: 1
+  - key: "Diablo IV"
+    enum: 2
 ```
 
 ### `etm.delete_entry`

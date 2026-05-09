@@ -36,6 +36,21 @@ delete_entry:
       selector:
         text:
 
+import_entries:
+  name: Import entries
+  description: Create or update multiple ETM title mappings for one watcher.
+  fields:
+    entry_id:
+      name: Watcher entry ID
+      required: true
+      selector:
+        text:
+    entries:
+      name: Entries
+      required: true
+      selector:
+        object:
+
 clear_old:
   name: Clear old entries
   description: Delete entries whose last_seen timestamp is older than the selected age.

@@ -100,13 +100,24 @@ class MapperStore:
 
     async def async_set_enum(self, key: str, enum: int) -> MapperEntry:
         """Set the enum for a key and persist the update."""
+        entry = self._set_enum_in_memory(key, enum)
+        await self.async_save()
+        return entry
+
+    async def async_import_entries(self, entries: list[dict[str, Any]]) -> list[MapperEntry]:
+        """Create or update multiple title entries and persist once."""
+        imported = [self._set_enum_in_memory(item["key"], item["enum"]) for item in entries]
+        await self.async_save()
+        return imported
+
+    def _set_enum_in_memory(self, key: str, enum: int) -> MapperEntry:
+        """Create or update an entry without saving immediately."""
         entry = self._entries.get(key)
         if entry is None:
             now = utcnow_iso()
             entry = MapperEntry(key=key, first_seen=now, last_seen=now, seen_count=0)
             self._entries[key] = entry
         entry.enum = enum
-        await self.async_save()
         return entry
 
     async def async_delete(self, key: str) -> bool:

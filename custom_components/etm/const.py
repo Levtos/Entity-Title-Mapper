@@ -25,10 +25,12 @@ ATTR_ENTRY_ID = "entry_id"
 ATTR_WATCHER_ID = "watcher_id"
 ATTR_WATCHER_NAME = "watcher_name"
 ATTR_DELETED = "deleted"
+ATTR_ENTRIES = "entries"
 
 SERVICE_SET_ENUM = "set_enum"
 SERVICE_DELETE_ENTRY = "delete_entry"
 SERVICE_CLEAR_OLD = "clear_old"
+SERVICE_IMPORT_ENTRIES = "import_entries"
 
 PANEL_URL = "/etm_panel.js"
 PANEL_TITLE = "Entity Title Mapper"

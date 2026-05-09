@@ -20,6 +20,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from .const import (
     ATTR_DELETED,
+    ATTR_ENTRIES,
     ATTR_ENTRY_ID,
     ATTR_KEY,
     CONF_ARTIST_ATTRIBUTE,
@@ -36,6 +37,7 @@ from .const import (
     PLATFORMS,
     SERVICE_CLEAR_OLD,
     SERVICE_DELETE_ENTRY,
+    SERVICE_IMPORT_ENTRIES,
     SERVICE_SET_ENUM,
 )
 from .storage import MapperStore
@@ -55,6 +57,18 @@ CLEAR_OLD_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_ENTRY_ID): cv.string,
         vol.Optional("days", default=30): vol.All(vol.Coerce(int), vol.Range(min=1)),
+    }
+)
+IMPORT_ENTRY_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_KEY): cv.string,
+        vol.Required("enum"): vol.All(vol.Coerce(int), vol.Range(min=MIN_ENUM, max=MAX_ENUM)),
+    }
+)
+IMPORT_ENTRIES_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTRY_ID): cv.string,
+        vol.Required(ATTR_ENTRIES): vol.All(cv.ensure_list, [IMPORT_ENTRY_SCHEMA]),
     }
 )
 
@@ -81,7 +95,6 @@ IGNORED_RAW_VALUES = {
     "idle",
     "standby",
 }
-
 
 
 class WatcherRuntime:
@@ -139,6 +152,20 @@ class WatcherRuntime:
         for update_callback in list(self._listeners):
             update_callback()
 
+    def refresh_current_enum(self) -> None:
+        """Refresh the output enum from the current title mapping."""
+        self.current_enum = self.store.get_enum(self.current_key)
+
+    def catalog_summary(self) -> dict[str, Any]:
+        """Return title catalog data for entity attributes and the panel."""
+        entries = self.store.sorted_entries()
+        return {
+            "entry_count": len(entries),
+            "known_titles": [entry.key for entry in entries],
+            "mapped_titles": {entry.key: entry.enum for entry in entries if entry.enum != 0},
+            "unmapped_titles": [entry.key for entry in entries if entry.enum == 0],
+        }
+
     async def _async_source_changed(self, event: Event) -> None:
         """Handle source entity state changes."""
         new_state = event.data.get("new_state")
@@ -152,7 +179,7 @@ class WatcherRuntime:
             return
         await self.store.async_seen(key)
         self.current_key = key
-        self.current_enum = self.store.get_enum(key)
+        self.refresh_current_enum()
         self._notify_listeners()
 
     def key_from_state(self, state: State) -> str | None:
@@ -195,6 +222,7 @@ class WatcherRuntime:
             "retention_days": self.entry.options.get(CONF_RETENTION_DAYS),
             "current_key": self.current_key,
             "current_enum": self.current_enum,
+            **self.catalog_summary(),
             "entries": [item.as_dict() for item in self.store.sorted_entries()],
         }
 
@@ -233,23 +261,30 @@ async def _async_register_services(hass: HomeAssistant) -> None:
 
     async def async_set_enum(call: ServiceCall) -> None:
         runtime = _get_runtime(hass, call.data[ATTR_ENTRY_ID])
-        await runtime.store.async_set_enum(call.data[ATTR_KEY], call.data["enum"])
-        if runtime.current_key == call.data[ATTR_KEY]:
-            runtime.current_enum = call.data["enum"]
-            runtime._notify_listeners()
+        await _async_set_enum(runtime, call.data[ATTR_KEY], call.data["enum"])
+
+    async def async_import_entries(call: ServiceCall) -> None:
+        runtime = _get_runtime(hass, call.data[ATTR_ENTRY_ID])
+        entries = [_normalise_import_entry(item) for item in call.data[ATTR_ENTRIES]]
+        await runtime.store.async_import_entries(entries)
+        runtime.refresh_current_enum()
+        runtime._notify_listeners()
 
     async def async_delete_entry(call: ServiceCall) -> None:
         runtime = _get_runtime(hass, call.data[ATTR_ENTRY_ID])
         deleted = await runtime.store.async_delete(call.data[ATTR_KEY])
-        if deleted and runtime.current_key == call.data[ATTR_KEY]:
-            runtime.current_enum = 0
+        if deleted:
+            runtime.refresh_current_enum()
             runtime._notify_listeners()
 
     async def async_clear_old(call: ServiceCall) -> None:
         entry_id = call.data.get(ATTR_ENTRY_ID)
         runtimes = [_get_runtime(hass, entry_id)] if entry_id else hass.data[DOMAIN].values()
         for runtime in runtimes:
-            await runtime.store.async_clear_old(call.data["days"])
+            removed = await runtime.store.async_clear_old(call.data["days"])
+            if removed:
+                runtime.refresh_current_enum()
+                runtime._notify_listeners()
 
     hass.services.async_register(DOMAIN, SERVICE_SET_ENUM, async_set_enum, schema=SET_ENUM_SCHEMA)
     hass.services.async_register(
@@ -257,6 +292,9 @@ async def _async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, SERVICE_CLEAR_OLD, async_clear_old, schema=CLEAR_OLD_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_IMPORT_ENTRIES, async_import_entries, schema=IMPORT_ENTRIES_SCHEMA
     )
 
 
@@ -281,10 +319,7 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
     @websocket_api.async_response
     async def websocket_set_enum(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
         runtime = _get_runtime(hass, msg[ATTR_ENTRY_ID])
-        await runtime.store.async_set_enum(msg[ATTR_KEY], msg["enum"])
-        if runtime.current_key == msg[ATTR_KEY]:
-            runtime.current_enum = msg["enum"]
-            runtime._notify_listeners()
+        await _async_set_enum(runtime, msg[ATTR_KEY], msg["enum"])
         connection.send_result(msg["id"], runtime.as_panel_dict())
 
     @websocket_api.websocket_command(
@@ -300,14 +335,33 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
     ) -> None:
         runtime = _get_runtime(hass, msg[ATTR_ENTRY_ID])
         deleted = await runtime.store.async_delete(msg[ATTR_KEY])
-        if deleted and runtime.current_key == msg[ATTR_KEY]:
-            runtime.current_enum = 0
+        if deleted:
+            runtime.refresh_current_enum()
             runtime._notify_listeners()
         connection.send_result(msg["id"], {ATTR_DELETED: deleted})
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "etm/import_entries",
+            vol.Required(ATTR_ENTRY_ID): cv.string,
+            vol.Required(ATTR_ENTRIES): vol.All(cv.ensure_list, [IMPORT_ENTRY_SCHEMA]),
+        }
+    )
+    @websocket_api.async_response
+    async def websocket_import_entries(
+        hass: HomeAssistant, connection, msg: dict[str, Any]
+    ) -> None:
+        runtime = _get_runtime(hass, msg[ATTR_ENTRY_ID])
+        entries = [_normalise_import_entry(item) for item in msg[ATTR_ENTRIES]]
+        await runtime.store.async_import_entries(entries)
+        runtime.refresh_current_enum()
+        runtime._notify_listeners()
+        connection.send_result(msg["id"], runtime.as_panel_dict())
 
     websocket_api.async_register_command(hass, websocket_list)
     websocket_api.async_register_command(hass, websocket_set_enum)
     websocket_api.async_register_command(hass, websocket_delete_entry)
+    websocket_api.async_register_command(hass, websocket_import_entries)
 
 
 async def _async_register_panel(hass: HomeAssistant) -> None:
@@ -331,6 +385,27 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         hass.components.frontend.async_remove_panel(DOMAIN)
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _remove_panel)
+
+
+async def _async_set_enum(runtime: WatcherRuntime, key: str, enum: int) -> None:
+    """Create or update one title mapping and refresh dependent entities."""
+    key = _normalise_key(key)
+    await runtime.store.async_set_enum(key, enum)
+    runtime.refresh_current_enum()
+    runtime._notify_listeners()
+
+
+def _normalise_import_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Normalise one imported title mapping."""
+    return {ATTR_KEY: _normalise_key(entry[ATTR_KEY]), "enum": entry["enum"]}
+
+
+def _normalise_key(key: str) -> str:
+    """Normalise a manually supplied title/key."""
+    key = str(key).strip()
+    if not key:
+        raise ServiceValidationError("ETM key/title must not be empty")
+    return key
 
 
 def _get_runtime(hass: HomeAssistant, entry_id: str) -> WatcherRuntime:

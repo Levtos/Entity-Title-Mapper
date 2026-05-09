@@ -39,6 +39,17 @@ class EtmPanel extends HTMLElement {
     await this._refresh();
   }
 
+  async _importEntries(entryId, rawText) {
+    const entries = this._parseImportLines(rawText);
+    if (entries.length === 0) return;
+    await this._hass.connection.sendMessagePromise({
+      type: "etm/import_entries",
+      entry_id: entryId,
+      entries,
+    });
+    await this._refresh();
+  }
+
   async _deleteEntry(entryId, key) {
     if (!confirm(`Delete ETM entry "${key}"?`)) return;
     await this._hass.connection.sendMessagePromise({
@@ -47,6 +58,26 @@ class EtmPanel extends HTMLElement {
       key,
     });
     await this._refresh();
+  }
+
+  _parseImportLines(rawText) {
+    const entries = [];
+    const invalidLines = [];
+    String(rawText ?? "").split(/\r?\n/).forEach((line, index) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const match = trimmed.match(/^(.+?)[\t|,;=]\s*([0-9])$/);
+      if (!match) {
+        invalidLines.push(index + 1);
+        return;
+      }
+      entries.push({ key: match[1].trim(), enum: Number(match[2]) });
+    });
+    if (invalidLines.length > 0) {
+      alert(`Invalid ETM import line(s): ${invalidLines.join(", ")}. Use: Title = enum`);
+      return [];
+    }
+    return entries;
   }
 
   _render() {
@@ -70,8 +101,11 @@ class EtmPanel extends HTMLElement {
         .meta { opacity: 0.75; }
         .current { margin: 12px 0; }
         .add-row { align-items: end; display: grid; gap: 8px; grid-template-columns: minmax(220px, 1fr) 90px auto; }
+        .bulk-row { display: grid; gap: 8px; margin-top: 12px; }
+        .hint { font-size: 0.9em; opacity: 0.75; }
         label { display: grid; gap: 4px; }
-        input, button, select { font: inherit; }
+        input, button, select, textarea { font: inherit; }
+        textarea { min-height: 84px; }
         table { border-collapse: collapse; width: 100%; background: var(--card-background-color); }
         th, td { border-bottom: 1px solid var(--divider-color); padding: 10px; text-align: left; }
         th { font-weight: 600; }
@@ -94,8 +128,9 @@ class EtmPanel extends HTMLElement {
             <div class="current">
               Current title: <span class="key">${this._escape(watcher.current_key ?? "—")}</span>
               <span class="badge">Enum ${watcher.current_enum ?? 0}</span>
+              <span class="badge">${watcher.entry_count ?? 0} titles tracked</span>
             </div>
-            <form class="add-row" data-entry-id="${this._escape(watcher.entry_id)}">
+            <form class="add-row" data-action="single-add" data-entry-id="${this._escape(watcher.entry_id)}">
               <label>
                 Title/key to map
                 <input name="key" placeholder="e.g. Astro's Playroom" value="${this._escape(watcher.current_key ?? "")}" />
@@ -106,7 +141,15 @@ class EtmPanel extends HTMLElement {
                   ${Array.from({ length: 10 }, (_, value) => `<option value="${value}">${value}</option>`).join("")}
                 </select>
               </label>
-              <button type="submit">Add/update</button>
+              <button type="submit">Add/update one</button>
+            </form>
+            <form class="bulk-row" data-action="bulk-import" data-entry-id="${this._escape(watcher.entry_id)}">
+              <label>
+                Title list / manual catalog import
+                <textarea name="entries" placeholder="Astro's Playroom = 1&#10;Diablo IV = 2&#10;Ratchet & Clank: Rift Apart = 3"></textarea>
+              </label>
+              <div class="hint">One title per line. Accepted separators: = ; , | or tab. Example: Title = 4</div>
+              <button type="submit">Import/update list</button>
             </form>
           </article>
         `).join("")}
@@ -145,11 +188,18 @@ class EtmPanel extends HTMLElement {
     `;
 
     this.shadowRoot.getElementById("refresh")?.addEventListener("click", () => this._refresh());
-    this.shadowRoot.querySelectorAll('form.add-row').forEach((form) => {
+    this.shadowRoot.querySelectorAll('form[data-action="single-add"]').forEach((form) => {
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         const formData = new FormData(form);
         this._setEnum(form.dataset.entryId, formData.get("key"), formData.get("enum"));
+      });
+    });
+    this.shadowRoot.querySelectorAll('form[data-action="bulk-import"]').forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const formData = new FormData(form);
+        this._importEntries(form.dataset.entryId, formData.get("entries"));
       });
     });
     this.shadowRoot.querySelectorAll('select[data-action="enum"]').forEach((select) => {
