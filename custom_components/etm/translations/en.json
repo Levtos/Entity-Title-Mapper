@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Create ETM watcher",
+        "description": "Choose the entity whose title/state values should be mapped to an enum.",
+        "data": {
+          "name": "Name",
+          "source_entity": "Source entity",
+          "artist_attribute": "Artist attribute",
+          "watcher_type": "Watcher type",
+          "retention_days": "Retention days"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "ETM watcher options",
+        "data": {
+          "retention_days": "Retention days"
+        }
+      }
+    }
+  }
+}

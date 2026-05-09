@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ETM-Watcher erstellen",
+        "description": "Wähle die Entität, deren Titel-/Statuswerte auf einen Enum gemappt werden sollen.",
+        "data": {
+          "name": "Name",
+          "source_entity": "Quell-Entität",
+          "artist_attribute": "Artist-Attribut",
+          "watcher_type": "Watcher-Typ",
+          "retention_days": "Retention-Tage"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "ETM-Watcher-Optionen",
+        "data": {
+          "retention_days": "Retention-Tage"
+        }
+      }
+    }
+  }
+}
