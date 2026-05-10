@@ -57,7 +57,7 @@ class EtmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         selector.SelectSelectorConfig(options=WATCHER_TYPES)
                     ),
                     vol.Optional(CONF_RETENTION_DAYS): selector.NumberSelector(
-                        selector.NumberSelectorConfig(min=1, mode="box")
+                        selector.NumberSelectorConfig(min=1, step=1, mode="box")
                     ),
                 }
             ),
@@ -84,16 +84,15 @@ class EtmOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        current = self._config_entry.options.get(CONF_RETENTION_DAYS)
+        number_selector = selector.NumberSelector(
+            selector.NumberSelectorConfig(min=1, step=1, mode="box")
+        )
+        if current is not None:
+            days_field = vol.Optional(CONF_RETENTION_DAYS, default=int(current))
+        else:
+            days_field = vol.Optional(CONF_RETENTION_DAYS)
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_RETENTION_DAYS,
-                        default=self._config_entry.options.get(CONF_RETENTION_DAYS),
-                    ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(min=1, mode="box")
-                    )
-                }
-            ),
+            data_schema=vol.Schema({days_field: number_selector}),
         )
