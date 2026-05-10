@@ -366,10 +366,94 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
         runtime._notify_listeners()
         connection.send_result(msg["id"], runtime.as_panel_dict())
 
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "etm/get_sources",
+        }
+    )
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    async def websocket_get_sources(
+        hass: HomeAssistant, connection, msg: dict[str, Any]
+    ) -> None:
+        sources = [
+            {
+                "entry_id": entry_id,
+                "name": runtime.name,
+                "watcher_type": runtime.entry.data[CONF_WATCHER_TYPE],
+                "source_entity": runtime.source_entity,
+            }
+            for entry_id, runtime in hass.data.get(DOMAIN, {}).items()
+        ]
+        connection.send_result(msg["id"], sources)
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "etm/list_entries",
+            vol.Optional("source"): cv.string,
+            vol.Optional("unclassified"): bool,
+            vol.Optional("search"): cv.string,
+        }
+    )
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    async def websocket_list_entries(
+        hass: HomeAssistant, connection, msg: dict[str, Any]
+    ) -> None:
+        source_filter: str | None = msg.get("source")
+        unclassified_only: bool = msg.get("unclassified", False)
+        search: str = (msg.get("search") or "").lower().strip()
+
+        result = []
+        for entry_id, runtime in hass.data.get(DOMAIN, {}).items():
+            if source_filter and entry_id != source_filter:
+                continue
+            for entry in runtime.store.entries.values():
+                if unclassified_only and entry.enum != 0:
+                    continue
+                if search and search not in entry.key.lower():
+                    continue
+                result.append(
+                    {
+                        "entry_id": entry_id,
+                        "source_name": runtime.name,
+                        "watcher_type": runtime.entry.data[CONF_WATCHER_TYPE],
+                        "key": entry.key,
+                        "enum": entry.enum,
+                        "first_seen": entry.first_seen,
+                        "last_seen": entry.last_seen,
+                        "seen_count": entry.seen_count,
+                        "is_current": entry.key == runtime.current_key,
+                    }
+                )
+        connection.send_result(msg["id"], result)
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "etm/update_entry",
+            vol.Required(ATTR_ENTRY_ID): cv.string,
+            vol.Required(ATTR_KEY): cv.string,
+            vol.Required("enum_value"): vol.All(
+                vol.Coerce(int), vol.Range(min=MIN_ENUM, max=MAX_ENUM)
+            ),
+        }
+    )
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    async def websocket_update_entry(
+        hass: HomeAssistant, connection, msg: dict[str, Any]
+    ) -> None:
+        runtime = _get_runtime(hass, msg[ATTR_ENTRY_ID])
+        await _async_set_enum(runtime, msg[ATTR_KEY], msg["enum_value"])
+        connection.send_result(msg["id"], {"success": True})
+
     websocket_api.async_register_command(hass, websocket_list)
     websocket_api.async_register_command(hass, websocket_set_enum)
     websocket_api.async_register_command(hass, websocket_delete_entry)
     websocket_api.async_register_command(hass, websocket_import_entries)
+    websocket_api.async_register_command(hass, websocket_get_sources)
+    websocket_api.async_register_command(hass, websocket_list_entries)
+    websocket_api.async_register_command(hass, websocket_update_entry)
 
 
 async def _async_register_panel(hass: HomeAssistant) -> None:
