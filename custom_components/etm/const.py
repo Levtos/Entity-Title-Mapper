@@ -32,6 +32,6 @@ SERVICE_DELETE_ENTRY = "delete_entry"
 SERVICE_CLEAR_OLD = "clear_old"
 SERVICE_IMPORT_ENTRIES = "import_entries"
 
-PANEL_URL = "/etm_panel.js"
+PANEL_URL = "/etm_panel_v4.js"
 PANEL_TITLE = "Title Classifier"
 PANEL_ICON = "mdi:tag-multiple"
