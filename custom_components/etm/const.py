@@ -33,5 +33,5 @@ SERVICE_CLEAR_OLD = "clear_old"
 SERVICE_IMPORT_ENTRIES = "import_entries"
 
 PANEL_URL = "/etm_panel.js"
-PANEL_TITLE = "Entity Title Mapper"
-PANEL_ICON = "mdi:format-list-numbered"
+PANEL_TITLE = "Title Classifier"
+PANEL_ICON = "mdi:tag-multiple"
