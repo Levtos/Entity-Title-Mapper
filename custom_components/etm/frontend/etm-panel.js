@@ -1,5 +1,5 @@
 // Entity Title Mapper – Title Classifier panel
-// Uses the ETM REST API (/api/etm/*) — no WebSocket needed.
+// Uses Home Assistant WebSocket commands for authenticated ETM access.
 // Number inputs are always visible; change + blur/Enter saves immediately.
 
 class EtmPanel extends HTMLElement {
@@ -21,6 +21,8 @@ class EtmPanel extends HTMLElement {
 
     this._page     = 1;
     this._pageSize = 100;
+
+    this._lastRenderSignature = null;
   }
 
   set hass(h) {
@@ -37,23 +39,11 @@ class EtmPanel extends HTMLElement {
     clearInterval(this._timer);
   }
 
-  // ── REST helpers ──────────────────────────────────────────────────────────
+  // ── WebSocket helper ──────────────────────────────────────────────────────
 
-  async _api(method, path, body = null) {
-    const opts = {
-      method,
-      headers: { Authorization: `Bearer ${this._hass.auth.data.access_token}` },
-    };
-    if (body !== null) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
-    }
-    const res = await fetch(`/api/etm/${path}`, opts);
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText);
-      throw new Error(text || `HTTP ${res.status}`);
-    }
-    return res.json();
+  async _ws(message) {
+    if (!this._hass?.connection) throw new Error("Home Assistant connection unavailable");
+    return this._hass.connection.sendMessagePromise(message);
   }
 
   // ── data loading ──────────────────────────────────────────────────────────
@@ -64,38 +54,42 @@ class EtmPanel extends HTMLElement {
 
   async _loadSources() {
     try {
-      this._sources = await this._api("GET", "sources");
+      this._sources = await this._ws({ type: "etm/get_sources" });
     } catch (err) {
       this._toast(`Quellen konnten nicht geladen werden: ${err.message}`, "error");
     }
     this._render();
   }
 
-  async _loadEntries() {
+  async _loadEntries({ showLoading = false, resetPage = false } = {}) {
     if (!this._hass) return;
-    this._loading = true;
-    this._render();
+    this._loading = showLoading;
+    this._setTableLoading(showLoading);
     try {
-      const p = new URLSearchParams();
-      if (this._filterSource)        p.set("source",       this._filterSource);
-      if (this._filterUnclassified)  p.set("unclassified", "1");
-      if (this._filterSearch.trim()) p.set("search",       this._filterSearch.trim());
-      const qs = p.toString();
-      this._entries = await this._api("GET", qs ? `entries?${qs}` : "entries");
-      this._page = 1;
+      const message = { type: "etm/list_entries" };
+      if (this._filterSource) message.source = this._filterSource;
+      if (this._filterUnclassified) message.unclassified = true;
+      if (this._filterSearch.trim()) message.search = this._filterSearch.trim();
+      this._entries = await this._ws(message);
+      if (resetPage) this._page = 1;
     } catch (err) {
       this._toast(`Laden fehlgeschlagen: ${err.message}`, "error");
     } finally {
       this._loading = false;
+      this._setTableLoading(false);
       this._render();
     }
+  }
+
+  _setTableLoading(isLoading) {
+    this.shadowRoot?.querySelector(".tw")?.classList.toggle("loading", isLoading);
   }
 
   // ── save — no full re-render, just update the input's baseline ────────────
 
   async _save(entryId, key, value, inputEl) {
     try {
-      await this._api("POST", "update", { entry_id: entryId, key, enum_value: value });
+      await this._ws({ type: "etm/update_entry", entry_id: entryId, key, enum_value: value });
       const e = this._entries.find(e => e.entry_id === entryId && e.key === key);
       if (e) e.enum = value;
       inputEl.dataset.original = String(value);
@@ -138,13 +132,17 @@ class EtmPanel extends HTMLElement {
 
   // ── render ────────────────────────────────────────────────────────────────
 
-  _render() {
+  _render(force = false) {
     if (!this.shadowRoot) return;
 
     const sorted     = this._sorted();
     const totalPages = Math.max(1, Math.ceil(sorted.length / this._pageSize));
     const page       = Math.min(this._page, totalPages);
+    if (this._page !== page) this._page = page;
     const rows       = sorted.slice((page - 1) * this._pageSize, page * this._pageSize);
+    const signature  = this._renderSignature(page);
+    if (!force && signature === this._lastRenderSignature) return;
+    this._lastRenderSignature = signature;
 
     const arr = col =>
       this._sortBy !== col
@@ -366,12 +364,12 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
       this._filterSource       = r.querySelector("#f-src")?.value ?? "";
       this._filterUnclassified = r.querySelector("#f-unc")?.checked ?? false;
       this._filterSearch       = r.querySelector("#f-s")?.value ?? "";
-      this._loadEntries();
+      this._loadEntries({ resetPage: true });
     });
     r.querySelector("#f-s")?.addEventListener("keydown", ev => {
       if (ev.key === "Enter") r.querySelector("#btn-apply")?.click();
     });
-    r.querySelector("#btn-ref")?.addEventListener("click", () => this._loadEntries());
+    r.querySelector("#btn-ref")?.addEventListener("click", () => this._loadEntries({ showLoading: true }));
 
     // sortable headers
     r.querySelector("#th-k")?.addEventListener("click", () => this._toggleSort("key"));
@@ -411,6 +409,19 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
   }
 
   // ── utilities ─────────────────────────────────────────────────────────────
+
+  _renderSignature(page) {
+    return JSON.stringify({
+      sources: this._sources,
+      entries: this._entries,
+      filterSource: this._filterSource,
+      filterUnclassified: this._filterUnclassified,
+      filterSearch: this._filterSearch,
+      sortBy: this._sortBy,
+      sortAsc: this._sortAsc,
+      page,
+    });
+  }
 
   _toast(msg, type = "info") {
     this.shadowRoot?.querySelectorAll(".toast").forEach(t => t.remove());
