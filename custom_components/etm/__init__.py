@@ -40,7 +40,6 @@ from .const import (
     SERVICE_IMPORT_ENTRIES,
     SERVICE_SET_ENUM,
 )
-from .http import EtmEntriesView, EtmSourcesView, EtmUpdateView
 from .storage import MapperStore
 
 
@@ -242,9 +241,6 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     await _async_register_services(hass)
     _async_register_websocket(hass)
     await _async_register_panel(hass)
-    hass.http.register_view(EtmSourcesView())
-    hass.http.register_view(EtmEntriesView())
-    hass.http.register_view(EtmUpdateView())
     return True
 
 

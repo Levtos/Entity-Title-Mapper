@@ -26,6 +26,10 @@ class EtmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        """Initialise flow state."""
+        self._user_input: dict[str, Any] = {}
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
@@ -34,25 +38,19 @@ class EtmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             await self.async_set_unique_id(user_input[CONF_NAME].lower().replace(" ", "_"))
             self._abort_if_unique_id_configured()
-            data = {
-                CONF_NAME: user_input[CONF_NAME],
-                CONF_SOURCE_ENTITY: user_input[CONF_SOURCE_ENTITY],
-                CONF_ARTIST_ATTRIBUTE: user_input.get(CONF_ARTIST_ATTRIBUTE)
-                or DEFAULT_ARTIST_ATTRIBUTE,
-                CONF_WATCHER_TYPE: user_input[CONF_WATCHER_TYPE],
-            }
-            options = {CONF_RETENTION_DAYS: user_input.get(CONF_RETENTION_DAYS)}
-            return self.async_create_entry(title=user_input[CONF_NAME], data=data, options=options)
+            self._user_input.update(user_input)
+            if user_input[CONF_WATCHER_TYPE] == "media":
+                return await self.async_step_artist()
+            return self._create_entry()
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_NAME): selector.TextSelector(),
-                    vol.Required(CONF_SOURCE_ENTITY): selector.EntitySelector(),
-                    vol.Optional(
-                        CONF_ARTIST_ATTRIBUTE, default=DEFAULT_ARTIST_ATTRIBUTE
-                    ): selector.TextSelector(),
+                    vol.Required(CONF_SOURCE_ENTITY): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain=["media_player", "sensor"])
+                    ),
                     vol.Required(CONF_WATCHER_TYPE, default="media"): selector.SelectSelector(
                         selector.SelectSelectorConfig(options=WATCHER_TYPES)
                     ),
@@ -62,6 +60,52 @@ class EtmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
+        )
+
+    async def async_step_artist(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Select the artist attribute for media watchers."""
+        if user_input is not None:
+            self._user_input.update(user_input)
+            return self._create_entry()
+
+        state = self.hass.states.get(self._user_input[CONF_SOURCE_ENTITY])
+        attrs = sorted(state.attributes) if state else []
+        artist_candidates = [
+            attr for attr in attrs if "artist" in attr.lower() or "author" in attr.lower()
+        ]
+        options = artist_candidates or attrs or [DEFAULT_ARTIST_ATTRIBUTE]
+        default = (
+            DEFAULT_ARTIST_ATTRIBUTE
+            if DEFAULT_ARTIST_ATTRIBUTE in options
+            else options[0]
+        )
+
+        return self.async_show_form(
+            step_id="artist",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_ARTIST_ATTRIBUTE, default=default): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=options, mode="dropdown", custom_value=True
+                        )
+                    )
+                }
+            ),
+        )
+
+    def _create_entry(self) -> config_entries.ConfigFlowResult:
+        """Create the watcher config entry from collected flow data."""
+        data = {
+            CONF_NAME: self._user_input[CONF_NAME],
+            CONF_SOURCE_ENTITY: self._user_input[CONF_SOURCE_ENTITY],
+            CONF_ARTIST_ATTRIBUTE: self._user_input.get(CONF_ARTIST_ATTRIBUTE),
+            CONF_WATCHER_TYPE: self._user_input[CONF_WATCHER_TYPE],
+        }
+        options = {CONF_RETENTION_DAYS: self._user_input.get(CONF_RETENTION_DAYS)}
+        return self.async_create_entry(
+            title=self._user_input[CONF_NAME], data=data, options=options
         )
 
     @staticmethod

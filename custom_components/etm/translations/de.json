@@ -7,9 +7,15 @@
         "data": {
           "name": "Name",
           "source_entity": "Quell-Entität",
-          "artist_attribute": "Artist-Attribut",
           "watcher_type": "Watcher-Typ",
           "retention_days": "Retention-Tage"
+        }
+      },
+      "artist": {
+        "title": "Artist-Attribut auswählen",
+        "description": "Wähle das Attribut, das den Artist/Autor für diesen Media-Watcher enthält.",
+        "data": {
+          "artist_attribute": "Artist-Attribut"
         }
       }
     }
