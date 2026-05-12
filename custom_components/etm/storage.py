@@ -110,6 +110,31 @@ class MapperStore:
         await self.async_save()
         return imported
 
+    def merge_keys_in_memory(self, target_key: str, source_keys: list[str]) -> None:
+        """Merge source keys into a target key without saving immediately."""
+        target = self._entries.get(target_key)
+        for source_key in source_keys:
+            if source_key == target_key:
+                continue
+            source = self._entries.pop(source_key, None)
+            if source is None:
+                continue
+            if target is None:
+                target = MapperEntry(
+                    key=target_key,
+                    enum=source.enum,
+                    first_seen=source.first_seen,
+                    last_seen=source.last_seen,
+                    seen_count=source.seen_count,
+                )
+                self._entries[target_key] = target
+                continue
+            if target.enum == DEFAULT_ENUM and source.enum != DEFAULT_ENUM:
+                target.enum = source.enum
+            target.first_seen = min(target.first_seen, source.first_seen)
+            target.last_seen = max(target.last_seen, source.last_seen)
+            target.seen_count += source.seen_count
+
     def _set_enum_in_memory(self, key: str, enum: int) -> MapperEntry:
         """Create or update an entry without saving immediately."""
         entry = self._entries.get(key)

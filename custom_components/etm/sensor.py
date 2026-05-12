@@ -51,16 +51,6 @@ class EtmBaseSensor(SensorEntity):
         """Refresh HA state from runtime state."""
         self.async_write_ha_state()
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return shared diagnostic attributes."""
-        return {
-            ATTR_KEY: self._runtime.current_key,
-            ATTR_WATCHER_ID: self._runtime.entry.entry_id,
-            ATTR_WATCHER_NAME: self._runtime.name,
-            **self._runtime.catalog_summary(),
-        }
-
 
 class EtmEnumSensor(EtmBaseSensor):
     """Sensor exposing the mapped enum value."""
@@ -77,9 +67,19 @@ class EtmEnumSensor(EtmBaseSensor):
         self.entity_id = f"sensor.etm_{slug}_enum"
 
     @property
-    def native_value(self) -> int:
+    def native_value(self) -> int | None:
         """Return the current enum."""
         return self._runtime.current_enum
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return slim attributes safe for recorder storage."""
+        return {
+            ATTR_KEY: self._runtime.current_key,
+            ATTR_WATCHER_ID: self._runtime.entry.entry_id,
+            ATTR_WATCHER_NAME: self._runtime.name,
+            "entry_count": self._runtime.catalog_summary()["entry_count"],
+        }
 
 
 class EtmRawSensor(EtmBaseSensor):
@@ -87,7 +87,6 @@ class EtmRawSensor(EtmBaseSensor):
 
     _attr_name = "Raw"
     _attr_icon = "mdi:form-textbox"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, runtime: WatcherRuntime) -> None:
         """Initialise the raw sensor."""
@@ -100,6 +99,16 @@ class EtmRawSensor(EtmBaseSensor):
     def native_value(self) -> str | None:
         """Return the current raw key."""
         return self._runtime.current_key
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return slim attributes safe for recorder storage."""
+        return {
+            ATTR_KEY: self._runtime.current_key,
+            ATTR_WATCHER_ID: self._runtime.entry.entry_id,
+            ATTR_WATCHER_NAME: self._runtime.name,
+            "entry_count": self._runtime.catalog_summary()["entry_count"],
+        }
 
 
 class EtmCatalogSensor(EtmBaseSensor):
@@ -120,3 +129,13 @@ class EtmCatalogSensor(EtmBaseSensor):
     def native_value(self) -> int:
         """Return the number of tracked title entries."""
         return self._runtime.catalog_summary()["entry_count"]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return full catalog attributes for diagnostics."""
+        return {
+            ATTR_KEY: self._runtime.current_key,
+            ATTR_WATCHER_ID: self._runtime.entry.entry_id,
+            ATTR_WATCHER_NAME: self._runtime.name,
+            **self._runtime.catalog_summary(),
+        }

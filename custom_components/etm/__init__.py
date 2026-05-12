@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import re
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,6 @@ from .const import (
     SERVICE_IMPORT_ENTRIES,
     SERVICE_SET_ENUM,
 )
-from .http import EtmEntriesView, EtmSourcesView, EtmUpdateView
 from .storage import MapperStore
 
 
@@ -84,7 +84,7 @@ TITLE_ATTRIBUTE_CANDIDATES = {
         "activity",
         "activity_name",
     ),
-    "media": ("media_title", "title", "media_content_id", "friendly_name"),
+    "media": ("media_title", "title"),
     "activity": ("activity", "activity_name", "media_title", "title", "app_name"),
 }
 IGNORED_RAW_VALUES = {
@@ -96,6 +96,8 @@ IGNORED_RAW_VALUES = {
     "idle",
     "standby",
 }
+MEDIA_RICH_TITLE_MARKERS = ("remix", "mix", "edit", "version", "club", "vip", "bootleg")
+MEDIA_FEATURE_MARKERS = (" feat", " ft", " featuring", " & ", ",")
 
 
 class WatcherRuntime:
@@ -107,7 +109,7 @@ class WatcherRuntime:
         self.entry = entry
         self.store = MapperStore(hass, entry.entry_id)
         self.current_key: str | None = None
-        self.current_enum = 0
+        self.current_enum: int | None = None
         self._remove_listener = None
         self._listeners: list[Callable[[], None]] = []
 
@@ -155,7 +157,7 @@ class WatcherRuntime:
 
     def refresh_current_enum(self) -> None:
         """Refresh the output enum from the current title mapping."""
-        self.current_enum = self.store.get_enum(self.current_key)
+        self.current_enum = self.store.get_enum(self.current_key) if self.current_key else None
 
     def catalog_summary(self) -> dict[str, Any]:
         """Return title catalog data for entity attributes and the panel."""
@@ -185,16 +187,32 @@ class WatcherRuntime:
         """Extract and persist the current key."""
         key = self.key_from_state(state)
         if not key:
+            self._clear_current_title()
             return
+        if self.entry.data[CONF_WATCHER_TYPE] == "media":
+            key = self._resolve_media_duplicate_key(key)
         await self.store.async_seen(key)
         self.current_key = key
         self.refresh_current_enum()
         self._notify_listeners()
 
+    def _clear_current_title(self) -> None:
+        """Clear the active title when the source is off, idle, or unavailable."""
+        if self.current_key is None and self.current_enum is None:
+            return
+        self.current_key = None
+        self.current_enum = None
+        self._notify_listeners()
+
     def key_from_state(self, state: State) -> str | None:
         """Build the raw key string from a Home Assistant state."""
+        if self._clean_value(state.state) is None:
+            return None
+
         watcher_type = self.entry.data[CONF_WATCHER_TYPE]
-        title = self._title_from_attributes(state, watcher_type) or self._clean_value(state.state)
+        title = self._title_from_attributes(state, watcher_type)
+        if title is None and watcher_type != "media":
+            title = self._clean_value(state.state)
         if title is None:
             return None
 
@@ -205,12 +223,80 @@ class WatcherRuntime:
         return title
 
     def _title_from_attributes(self, state: State, watcher_type: str) -> str | None:
-        """Return the first useful title-like attribute for a watcher type."""
-        for attribute in TITLE_ATTRIBUTE_CANDIDATES[watcher_type]:
-            value = self._clean_value(state.attributes.get(attribute))
-            if value is not None:
-                return value
-        return None
+        """Return the best useful title-like attribute for a watcher type."""
+        values = [
+            value
+            for attribute in TITLE_ATTRIBUTE_CANDIDATES[watcher_type]
+            if (value := self._clean_value(state.attributes.get(attribute))) is not None
+        ]
+        if not values:
+            return None
+        if watcher_type == "media":
+            return max(values, key=self._media_title_score)
+        return values[0]
+
+    def _resolve_media_duplicate_key(self, key: str) -> str:
+        """Collapse simple media duplicates into the richer/remix title key."""
+        duplicate_keys = [
+            existing_key
+            for existing_key in self.store.entries
+            if self._media_keys_match(existing_key, key)
+        ]
+        if not duplicate_keys:
+            return key
+
+        best_key = max([key, *duplicate_keys], key=self._media_key_score)
+        if best_key == key:
+            self.store.merge_keys_in_memory(best_key, duplicate_keys)
+        return best_key
+
+    def _media_keys_match(self, left: str, right: str) -> bool:
+        """Return whether two media keys are likely duplicate reports for one song."""
+        left_artist, left_title = self._split_media_key(left)
+        right_artist, right_title = self._split_media_key(right)
+        return (
+            self._normalise_artist(left_artist) == self._normalise_artist(right_artist)
+            and self._normalise_title(left_title) == self._normalise_title(right_title)
+        )
+
+    def _split_media_key(self, key: str) -> tuple[str, str]:
+        """Split a media key into artist and title parts."""
+        if " - " not in key:
+            return "", key
+        artist, title = key.split(" - ", 1)
+        return artist, title
+
+    def _normalise_artist(self, value: str) -> str:
+        """Return a stable primary artist token for duplicate matching."""
+        value = re.split(r"\s+(?:feat\.?|ft\.?|featuring)\s+|\s*&\s*|,", value, 1, re.I)[0]
+        return self._normalise_text(value)
+
+    def _normalise_title(self, value: str) -> str:
+        """Return a stable base title token for duplicate matching."""
+        value = re.sub(r"\([^)]*\)", "", value)
+        return self._normalise_text(value)
+
+    def _normalise_text(self, value: str) -> str:
+        """Lowercase a value and collapse punctuation/spacing for comparisons."""
+        return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+    def _media_key_score(self, key: str) -> int:
+        """Score richer media keys above plain title reports."""
+        artist, title = self._split_media_key(key)
+        return self._media_title_score(title) + self._media_artist_score(artist)
+
+    def _media_title_score(self, title: str) -> int:
+        """Score title values, preferring explicit remix/version details."""
+        lowered = title.lower()
+        marker_score = 20 if any(marker in lowered for marker in MEDIA_RICH_TITLE_MARKERS) else 0
+        detail_score = 10 if "(" in title and ")" in title else 0
+        return marker_score + detail_score + len(title)
+
+    def _media_artist_score(self, artist: str) -> int:
+        """Score artist values, preferring featured-artist detail."""
+        lowered = artist.lower()
+        marker_score = 10 if any(marker in lowered for marker in MEDIA_FEATURE_MARKERS) else 0
+        return marker_score + len(artist)
 
     def _clean_value(self, value: Any) -> str | None:
         """Normalise a candidate key value and drop unavailable/idling values."""
@@ -242,9 +328,6 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     await _async_register_services(hass)
     _async_register_websocket(hass)
     await _async_register_panel(hass)
-    hass.http.register_view(EtmSourcesView())
-    hass.http.register_view(EtmEntriesView())
-    hass.http.register_view(EtmUpdateView())
     return True
 
 

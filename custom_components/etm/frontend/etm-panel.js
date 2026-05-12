@@ -1,6 +1,6 @@
 // Entity Title Mapper – Title Classifier panel
-// Uses the ETM REST API (/api/etm/*) — no WebSocket needed.
-// Number inputs are always visible; change + blur/Enter saves immediately.
+// Uses Home Assistant WebSocket commands for authenticated ETM access.
+// Number inputs are always visible; Save/Enter persists changes explicitly.
 
 class EtmPanel extends HTMLElement {
   constructor() {
@@ -21,6 +21,8 @@ class EtmPanel extends HTMLElement {
 
     this._page     = 1;
     this._pageSize = 100;
+
+    this._lastRenderSignature = null;
   }
 
   set hass(h) {
@@ -37,23 +39,11 @@ class EtmPanel extends HTMLElement {
     clearInterval(this._timer);
   }
 
-  // ── REST helpers ──────────────────────────────────────────────────────────
+  // ── WebSocket helper ──────────────────────────────────────────────────────
 
-  async _api(method, path, body = null) {
-    const opts = {
-      method,
-      headers: { Authorization: `Bearer ${this._hass.auth.data.access_token}` },
-    };
-    if (body !== null) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
-    }
-    const res = await fetch(`/api/etm/${path}`, opts);
-    if (!res.ok) {
-      const text = await res.text().catch(() => res.statusText);
-      throw new Error(text || `HTTP ${res.status}`);
-    }
-    return res.json();
+  async _ws(message) {
+    if (!this._hass?.connection) throw new Error("Home Assistant connection unavailable");
+    return this._hass.connection.sendMessagePromise(message);
   }
 
   // ── data loading ──────────────────────────────────────────────────────────
@@ -64,46 +54,87 @@ class EtmPanel extends HTMLElement {
 
   async _loadSources() {
     try {
-      this._sources = await this._api("GET", "sources");
+      this._sources = await this._ws({ type: "etm/get_sources" });
     } catch (err) {
       this._toast(`Quellen konnten nicht geladen werden: ${err.message}`, "error");
     }
     this._render();
   }
 
-  async _loadEntries() {
+  async _loadEntries({ showLoading = false, resetPage = false } = {}) {
     if (!this._hass) return;
-    this._loading = true;
-    this._render();
+    this._loading = showLoading;
+    this._setTableLoading(showLoading);
     try {
-      const p = new URLSearchParams();
-      if (this._filterSource)        p.set("source",       this._filterSource);
-      if (this._filterUnclassified)  p.set("unclassified", "1");
-      if (this._filterSearch.trim()) p.set("search",       this._filterSearch.trim());
-      const qs = p.toString();
-      this._entries = await this._api("GET", qs ? `entries?${qs}` : "entries");
-      this._page = 1;
+      const message = { type: "etm/list_entries" };
+      if (this._filterSource) message.source = this._filterSource;
+      if (this._filterUnclassified) message.unclassified = true;
+      if (this._filterSearch.trim()) message.search = this._filterSearch.trim();
+      this._entries = await this._ws(message);
+      if (resetPage) this._page = 1;
     } catch (err) {
       this._toast(`Laden fehlgeschlagen: ${err.message}`, "error");
     } finally {
       this._loading = false;
+      this._setTableLoading(false);
       this._render();
     }
   }
 
+  _setTableLoading(isLoading) {
+    this.shadowRoot?.querySelector(".tw")?.classList.toggle("loading", isLoading);
+  }
+
   // ── save — no full re-render, just update the input's baseline ────────────
 
-  async _save(entryId, key, value, inputEl) {
+  async _save(entryId, key, value, inputEl, buttonEl = null) {
     try {
-      await this._api("POST", "update", { entry_id: entryId, key, enum_value: value });
+      this._setSaving(inputEl, buttonEl, true);
+      await this._ws({ type: "etm/update_entry", entry_id: entryId, key, enum_value: value });
       const e = this._entries.find(e => e.entry_id === entryId && e.key === key);
       if (e) e.enum = value;
       inputEl.dataset.original = String(value);
+      inputEl.value = String(value);
+      this._setInputDirty(inputEl, buttonEl, false);
       this._flash(inputEl, "saved");
+      this._toast("Wert gespeichert", "success");
     } catch (err) {
       this._toast(`Speichern fehlgeschlagen: ${err.message}`, "error");
       inputEl.value = inputEl.dataset.original;
+      this._setInputDirty(inputEl, buttonEl, false);
       this._flash(inputEl, "err");
+    } finally {
+      this._setSaving(inputEl, buttonEl, false);
+    }
+  }
+
+  _saveInput(inputEl) {
+    const orig = parseInt(inputEl.dataset.original, 10);
+    const val  = parseInt(inputEl.value, 10);
+    const buttonEl = this.shadowRoot?.querySelector(
+      `.save-row[data-eid="${CSS.escape(inputEl.dataset.eid)}"][data-key="${CSS.escape(inputEl.dataset.key)}"]`
+    );
+    if (isNaN(val)) { inputEl.value = orig; return; }
+    if (val === orig) { this._setInputDirty(inputEl, buttonEl, false); return; }
+    if (val < 0 || val > 9) {
+      this._toast("Wert muss 0–9 sein", "error");
+      inputEl.value = orig;
+      this._setInputDirty(inputEl, buttonEl, false);
+      return;
+    }
+    this._save(inputEl.dataset.eid, inputEl.dataset.key, val, inputEl, buttonEl);
+  }
+
+  _setInputDirty(inputEl, buttonEl, dirty) {
+    inputEl.classList.toggle("dirty", dirty);
+    if (buttonEl) buttonEl.disabled = !dirty;
+  }
+
+  _setSaving(inputEl, buttonEl, saving) {
+    inputEl.disabled = saving;
+    if (buttonEl) {
+      buttonEl.disabled = saving || inputEl.value === inputEl.dataset.original;
+      buttonEl.textContent = saving ? "…" : "Speichern";
     }
   }
 
@@ -138,13 +169,21 @@ class EtmPanel extends HTMLElement {
 
   // ── render ────────────────────────────────────────────────────────────────
 
-  _render() {
+  _render(force = false) {
     if (!this.shadowRoot) return;
+
+    const savedFocus = this.shadowRoot.activeElement?.classList?.contains("ei")
+      ? { eid: this.shadowRoot.activeElement.dataset.eid, key: this.shadowRoot.activeElement.dataset.key }
+      : null;
 
     const sorted     = this._sorted();
     const totalPages = Math.max(1, Math.ceil(sorted.length / this._pageSize));
     const page       = Math.min(this._page, totalPages);
+    if (this._page !== page) this._page = page;
     const rows       = sorted.slice((page - 1) * this._pageSize, page * this._pageSize);
+    const signature  = this._renderSignature(page);
+    if (!force && signature === this._lastRenderSignature) return;
+    this._lastRenderSignature = signature;
 
     const arr = col =>
       this._sortBy !== col
@@ -241,7 +280,9 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   width: 62px; height: 30px; padding: 0;
   transition: border-color .18s, background .18s;
 }
+.enum-cell { display: flex; align-items: center; gap: 8px; }
 .ei:focus { outline: none; border-color: var(--primary-color); }
+.ei.dirty { border-color: var(--warning-color, #ffa600); }
 .ei.saved {
   border-color: var(--success-color, #4caf50);
   background: color-mix(in srgb, var(--success-color, #4caf50) 14%, transparent);
@@ -250,6 +291,8 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   border-color: var(--error-color, #f44336);
   background: color-mix(in srgb, var(--error-color, #f44336) 14%, transparent);
 }
+.save-row { height: 30px; padding: 0 10px; }
+.save-row:disabled { cursor: default; opacity: .45; }
 
 /* pagination */
 .pag {
@@ -294,7 +337,7 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   <div class="fg">
     <input type="text" id="f-s" placeholder="Titel suchen …" value="${this._esc(this._filterSearch)}" />
   </div>
-  <button class="btn btn-p" id="btn-apply">Übernehmen</button>
+  <button class="btn btn-p" id="btn-apply">Filter anwenden</button>
   <button class="btn btn-g" id="btn-ref" title="Jetzt aktualisieren">↻</button>
 </div>
 
@@ -310,7 +353,7 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
       <tr>
         <th id="th-k">Titel ${arr("key")}</th>
         <th>Source</th>
-        <th id="th-e" style="width:90px">Wert ${arr("enum")}</th>
+        <th id="th-e" style="width:180px">Wert ${arr("enum")}</th>
         <th id="th-l">Zuletzt ${arr("last_seen")}</th>
       </tr>
     </thead>
@@ -322,9 +365,13 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   <td class="key">${this._esc(e.key)}${e.is_current ? '<span class="badge">aktiv</span>' : ""}</td>
   <td><span class="src">${this._esc(e.source_name)}</span></td>
   <td>
-    <input class="ei" type="number" min="0" max="9" step="1"
-           value="${e.enum}" data-original="${e.enum}"
-           data-eid="${this._esc(e.entry_id)}" data-key="${this._esc(e.key)}" />
+    <div class="enum-cell">
+      <input class="ei" type="number" min="0" max="9" step="1"
+             value="${e.enum}" data-original="${e.enum}"
+             data-eid="${this._esc(e.entry_id)}" data-key="${this._esc(e.key)}" />
+      <button class="btn btn-g save-row" disabled
+              data-eid="${this._esc(e.entry_id)}" data-key="${this._esc(e.key)}">Speichern</button>
+    </div>
   </td>
   <td>${this._rel(e.last_seen)}</td>
 </tr>`).join("")}
@@ -336,6 +383,11 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
 `;
 
     this._wire(page, totalPages);
+    if (savedFocus) {
+      this.shadowRoot
+        .querySelector(`.ei[data-eid="${CSS.escape(savedFocus.eid)}"][data-key="${CSS.escape(savedFocus.key)}"]`)
+        ?.focus();
+    }
   }
 
   _pagHtml(page, n) {
@@ -366,35 +418,41 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
       this._filterSource       = r.querySelector("#f-src")?.value ?? "";
       this._filterUnclassified = r.querySelector("#f-unc")?.checked ?? false;
       this._filterSearch       = r.querySelector("#f-s")?.value ?? "";
-      this._loadEntries();
+      this._loadEntries({ resetPage: true });
     });
     r.querySelector("#f-s")?.addEventListener("keydown", ev => {
       if (ev.key === "Enter") r.querySelector("#btn-apply")?.click();
     });
-    r.querySelector("#btn-ref")?.addEventListener("click", () => this._loadEntries());
+    r.querySelector("#btn-ref")?.addEventListener("click", () => this._loadEntries({ showLoading: true }));
 
     // sortable headers
     r.querySelector("#th-k")?.addEventListener("click", () => this._toggleSort("key"));
     r.querySelector("#th-e")?.addEventListener("click", () => this._toggleSort("enum"));
     r.querySelector("#th-l")?.addEventListener("click", () => this._toggleSort("last_seen"));
 
-    // enum inputs — save on blur, Enter triggers blur, Escape resets
+    // enum inputs — explicit save button; Enter saves, Escape resets
     r.querySelectorAll(".ei").forEach(inp => {
-      inp.addEventListener("keydown", ev => {
-        if (ev.key === "Enter")  { ev.preventDefault(); inp.blur(); }
-        if (ev.key === "Escape") { inp.value = inp.dataset.original; inp.blur(); }
+      const btn = r.querySelector(
+        `.save-row[data-eid="${CSS.escape(inp.dataset.eid)}"][data-key="${CSS.escape(inp.dataset.key)}"]`
+      );
+      inp.addEventListener("input", () => {
+        this._setInputDirty(inp, btn, inp.value !== inp.dataset.original);
       });
-      inp.addEventListener("blur", () => {
-        const orig = parseInt(inp.dataset.original, 10);
-        const val  = parseInt(inp.value, 10);
-        if (isNaN(val))        { inp.value = orig; return; }
-        if (val === orig)      return;
-        if (val < 0 || val > 9) {
-          this._toast("Wert muss 0–9 sein", "error");
-          inp.value = orig;
-          return;
+      inp.addEventListener("keydown", ev => {
+        if (ev.key === "Enter") { ev.preventDefault(); this._saveInput(inp); }
+        if (ev.key === "Escape") {
+          inp.value = inp.dataset.original;
+          this._setInputDirty(inp, btn, false);
+          inp.blur();
         }
-        this._save(inp.dataset.eid, inp.dataset.key, val, inp);
+      });
+    });
+    r.querySelectorAll(".save-row").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const inp = r.querySelector(
+          `.ei[data-eid="${CSS.escape(btn.dataset.eid)}"][data-key="${CSS.escape(btn.dataset.key)}"]`
+        );
+        if (inp) this._saveInput(inp);
       });
     });
 
@@ -411,6 +469,19 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
   }
 
   // ── utilities ─────────────────────────────────────────────────────────────
+
+  _renderSignature(page) {
+    return JSON.stringify({
+      sources: this._sources,
+      entries: this._entries,
+      filterSource: this._filterSource,
+      filterUnclassified: this._filterUnclassified,
+      filterSearch: this._filterSearch,
+      sortBy: this._sortBy,
+      sortAsc: this._sortAsc,
+      page,
+    });
+  }
 
   _toast(msg, type = "info") {
     this.shadowRoot?.querySelectorAll(".toast").forEach(t => t.remove());
