@@ -64,7 +64,7 @@ class EtmCurrentTitleEnumNumber(NumberEntity):
         return self._runtime.current_key is not None
 
     @property
-    def native_value(self) -> int:
+    def native_value(self) -> int | None:
         """Return the enum assigned to the current title."""
         return self._runtime.current_enum
 

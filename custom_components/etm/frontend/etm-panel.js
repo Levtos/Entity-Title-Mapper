@@ -1,6 +1,6 @@
 // Entity Title Mapper – Title Classifier panel
 // Uses Home Assistant WebSocket commands for authenticated ETM access.
-// Number inputs are always visible; change + blur/Enter saves immediately.
+// Number inputs are always visible; Save/Enter persists changes explicitly.
 
 class EtmPanel extends HTMLElement {
   constructor() {
@@ -87,17 +87,54 @@ class EtmPanel extends HTMLElement {
 
   // ── save — no full re-render, just update the input's baseline ────────────
 
-  async _save(entryId, key, value, inputEl) {
+  async _save(entryId, key, value, inputEl, buttonEl = null) {
     try {
+      this._setSaving(inputEl, buttonEl, true);
       await this._ws({ type: "etm/update_entry", entry_id: entryId, key, enum_value: value });
       const e = this._entries.find(e => e.entry_id === entryId && e.key === key);
       if (e) e.enum = value;
       inputEl.dataset.original = String(value);
+      inputEl.value = String(value);
+      this._setInputDirty(inputEl, buttonEl, false);
       this._flash(inputEl, "saved");
+      this._toast("Wert gespeichert", "success");
     } catch (err) {
       this._toast(`Speichern fehlgeschlagen: ${err.message}`, "error");
       inputEl.value = inputEl.dataset.original;
+      this._setInputDirty(inputEl, buttonEl, false);
       this._flash(inputEl, "err");
+    } finally {
+      this._setSaving(inputEl, buttonEl, false);
+    }
+  }
+
+  _saveInput(inputEl) {
+    const orig = parseInt(inputEl.dataset.original, 10);
+    const val  = parseInt(inputEl.value, 10);
+    const buttonEl = this.shadowRoot?.querySelector(
+      `.save-row[data-eid="${CSS.escape(inputEl.dataset.eid)}"][data-key="${CSS.escape(inputEl.dataset.key)}"]`
+    );
+    if (isNaN(val)) { inputEl.value = orig; return; }
+    if (val === orig) { this._setInputDirty(inputEl, buttonEl, false); return; }
+    if (val < 0 || val > 9) {
+      this._toast("Wert muss 0–9 sein", "error");
+      inputEl.value = orig;
+      this._setInputDirty(inputEl, buttonEl, false);
+      return;
+    }
+    this._save(inputEl.dataset.eid, inputEl.dataset.key, val, inputEl, buttonEl);
+  }
+
+  _setInputDirty(inputEl, buttonEl, dirty) {
+    inputEl.classList.toggle("dirty", dirty);
+    if (buttonEl) buttonEl.disabled = !dirty;
+  }
+
+  _setSaving(inputEl, buttonEl, saving) {
+    inputEl.disabled = saving;
+    if (buttonEl) {
+      buttonEl.disabled = saving || inputEl.value === inputEl.dataset.original;
+      buttonEl.textContent = saving ? "…" : "Speichern";
     }
   }
 
@@ -134,6 +171,10 @@ class EtmPanel extends HTMLElement {
 
   _render(force = false) {
     if (!this.shadowRoot) return;
+
+    const savedFocus = this.shadowRoot.activeElement?.classList?.contains("ei")
+      ? { eid: this.shadowRoot.activeElement.dataset.eid, key: this.shadowRoot.activeElement.dataset.key }
+      : null;
 
     const sorted     = this._sorted();
     const totalPages = Math.max(1, Math.ceil(sorted.length / this._pageSize));
@@ -239,7 +280,9 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   width: 62px; height: 30px; padding: 0;
   transition: border-color .18s, background .18s;
 }
+.enum-cell { display: flex; align-items: center; gap: 8px; }
 .ei:focus { outline: none; border-color: var(--primary-color); }
+.ei.dirty { border-color: var(--warning-color, #ffa600); }
 .ei.saved {
   border-color: var(--success-color, #4caf50);
   background: color-mix(in srgb, var(--success-color, #4caf50) 14%, transparent);
@@ -248,6 +291,8 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   border-color: var(--error-color, #f44336);
   background: color-mix(in srgb, var(--error-color, #f44336) 14%, transparent);
 }
+.save-row { height: 30px; padding: 0 10px; }
+.save-row:disabled { cursor: default; opacity: .45; }
 
 /* pagination */
 .pag {
@@ -292,7 +337,7 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   <div class="fg">
     <input type="text" id="f-s" placeholder="Titel suchen …" value="${this._esc(this._filterSearch)}" />
   </div>
-  <button class="btn btn-p" id="btn-apply">Übernehmen</button>
+  <button class="btn btn-p" id="btn-apply">Filter anwenden</button>
   <button class="btn btn-g" id="btn-ref" title="Jetzt aktualisieren">↻</button>
 </div>
 
@@ -308,7 +353,7 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
       <tr>
         <th id="th-k">Titel ${arr("key")}</th>
         <th>Source</th>
-        <th id="th-e" style="width:90px">Wert ${arr("enum")}</th>
+        <th id="th-e" style="width:180px">Wert ${arr("enum")}</th>
         <th id="th-l">Zuletzt ${arr("last_seen")}</th>
       </tr>
     </thead>
@@ -320,9 +365,13 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   <td class="key">${this._esc(e.key)}${e.is_current ? '<span class="badge">aktiv</span>' : ""}</td>
   <td><span class="src">${this._esc(e.source_name)}</span></td>
   <td>
-    <input class="ei" type="number" min="0" max="9" step="1"
-           value="${e.enum}" data-original="${e.enum}"
-           data-eid="${this._esc(e.entry_id)}" data-key="${this._esc(e.key)}" />
+    <div class="enum-cell">
+      <input class="ei" type="number" min="0" max="9" step="1"
+             value="${e.enum}" data-original="${e.enum}"
+             data-eid="${this._esc(e.entry_id)}" data-key="${this._esc(e.key)}" />
+      <button class="btn btn-g save-row" disabled
+              data-eid="${this._esc(e.entry_id)}" data-key="${this._esc(e.key)}">Speichern</button>
+    </div>
   </td>
   <td>${this._rel(e.last_seen)}</td>
 </tr>`).join("")}
@@ -334,6 +383,11 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
 `;
 
     this._wire(page, totalPages);
+    if (savedFocus) {
+      this.shadowRoot
+        .querySelector(`.ei[data-eid="${CSS.escape(savedFocus.eid)}"][data-key="${CSS.escape(savedFocus.key)}"]`)
+        ?.focus();
+    }
   }
 
   _pagHtml(page, n) {
@@ -376,23 +430,29 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
     r.querySelector("#th-e")?.addEventListener("click", () => this._toggleSort("enum"));
     r.querySelector("#th-l")?.addEventListener("click", () => this._toggleSort("last_seen"));
 
-    // enum inputs — save on blur, Enter triggers blur, Escape resets
+    // enum inputs — explicit save button; Enter saves, Escape resets
     r.querySelectorAll(".ei").forEach(inp => {
-      inp.addEventListener("keydown", ev => {
-        if (ev.key === "Enter")  { ev.preventDefault(); inp.blur(); }
-        if (ev.key === "Escape") { inp.value = inp.dataset.original; inp.blur(); }
+      const btn = r.querySelector(
+        `.save-row[data-eid="${CSS.escape(inp.dataset.eid)}"][data-key="${CSS.escape(inp.dataset.key)}"]`
+      );
+      inp.addEventListener("input", () => {
+        this._setInputDirty(inp, btn, inp.value !== inp.dataset.original);
       });
-      inp.addEventListener("blur", () => {
-        const orig = parseInt(inp.dataset.original, 10);
-        const val  = parseInt(inp.value, 10);
-        if (isNaN(val))        { inp.value = orig; return; }
-        if (val === orig)      return;
-        if (val < 0 || val > 9) {
-          this._toast("Wert muss 0–9 sein", "error");
-          inp.value = orig;
-          return;
+      inp.addEventListener("keydown", ev => {
+        if (ev.key === "Enter") { ev.preventDefault(); this._saveInput(inp); }
+        if (ev.key === "Escape") {
+          inp.value = inp.dataset.original;
+          this._setInputDirty(inp, btn, false);
+          inp.blur();
         }
-        this._save(inp.dataset.eid, inp.dataset.key, val, inp);
+      });
+    });
+    r.querySelectorAll(".save-row").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const inp = r.querySelector(
+          `.ei[data-eid="${CSS.escape(btn.dataset.eid)}"][data-key="${CSS.escape(btn.dataset.key)}"]`
+        );
+        if (inp) this._saveInput(inp);
       });
     });
 

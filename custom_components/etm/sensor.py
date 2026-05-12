@@ -67,7 +67,7 @@ class EtmEnumSensor(EtmBaseSensor):
         self.entity_id = f"sensor.etm_{slug}_enum"
 
     @property
-    def native_value(self) -> int:
+    def native_value(self) -> int | None:
         """Return the current enum."""
         return self._runtime.current_enum
 
