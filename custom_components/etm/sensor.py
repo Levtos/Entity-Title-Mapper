@@ -132,10 +132,15 @@ class EtmCatalogSensor(EtmBaseSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return full catalog attributes for diagnostics."""
+        """Return catalog counts — full lists are omitted to stay within recorder limits."""
+        entries = self._runtime.store.entries
+        total = len(entries)
+        mapped = sum(1 for e in entries.values() if e.enum != 0)
         return {
             ATTR_KEY: self._runtime.current_key,
             ATTR_WATCHER_ID: self._runtime.entry.entry_id,
             ATTR_WATCHER_NAME: self._runtime.name,
-            **self._runtime.catalog_summary(),
+            "entry_count": total,
+            "mapped_count": mapped,
+            "unmapped_count": total - mapped,
         }
