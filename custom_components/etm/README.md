@@ -1,6 +1,6 @@
-# Entity Title Mapper (ETM)
+# Title Classifier
 
-A HACS custom integration that watches entity states, persists every observed title in HA's storage, and exposes a numeric "enum" sensor so automations can react to what's playing/active without hard-coding titles.
+A HACS custom integration that watches entity states, persists every observed title in HA's storage, and exposes a numeric "enum" sensor so automations can react to what's playing/active without hard-coding titles. The integration domain remains `etm` for backward compatibility with existing config entries and automations.
 
 ## Panel — Title Classifier
 
@@ -35,7 +35,7 @@ The table refreshes automatically every 30 seconds. Click **↻ Refresh** to ref
 
 ## Watcher configuration
 
-Each watcher is a config entry created via **Settings → Devices & Services → Add Integration → Entity Title Mapper**.
+Each watcher is a config entry created via **Settings → Devices & Services → Add Integration → Title Classifier**.
 
 | Option | Description |
 |--------|-------------|
@@ -47,7 +47,7 @@ Each watcher is a config entry created via **Settings → Devices & Services →
 
 ## Adding new sources
 
-1. Go to **Settings → Devices & Services → Entity Title Mapper → Add entry**.
+1. Go to **Settings → Devices & Services → Title Classifier → Add entry**.
 2. Choose the source entity to watch and the watcher type.
 3. The integration starts recording titles immediately; they appear in the panel as they are observed.
 

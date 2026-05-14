@@ -1,4 +1,4 @@
-// Entity Title Mapper – Title Classifier panel
+// Title Classifier panel
 // Uses Home Assistant WebSocket commands for authenticated ETM access.
 // Number inputs are always visible; Save/Enter persists changes explicitly.
 
@@ -21,6 +21,9 @@ class EtmPanel extends HTMLElement {
 
     this._page     = 1;
     this._pageSize = 100;
+
+    this._groupByArtist = false;
+    this._showLegend    = false;
 
     this._lastRenderSignature = null;
   }
@@ -146,7 +149,12 @@ class EtmPanel extends HTMLElement {
   // ── sorting ───────────────────────────────────────────────────────────────
 
   _sorted() {
+    const grouping = this._groupByArtist && this._isMediaSource();
     return [...this._entries].sort((a, b) => {
+      if (grouping) {
+        const ac = (this._artistFrom(a.key) ?? "").localeCompare(this._artistFrom(b.key) ?? "");
+        if (ac !== 0) return ac;
+      }
       let cmp;
       switch (this._sortBy) {
         case "key":  cmp = a.key.localeCompare(b.key); break;
@@ -167,6 +175,26 @@ class EtmPanel extends HTMLElement {
     this._render();
   }
 
+  // ── artist helpers ────────────────────────────────────────────────────────
+
+  _artistFrom(key) {
+    const i = key.indexOf(" - ");
+    return i >= 0 ? key.slice(0, i) : null;
+  }
+
+  _titleFrom(key) {
+    const i = key.indexOf(" - ");
+    return i >= 0 ? key.slice(i + 3) : key;
+  }
+
+  _isMediaSource() {
+    if (this._filterSource) {
+      const src = this._sources.find(s => s.entry_id === this._filterSource);
+      return src?.watcher_type === "media";
+    }
+    return this._sources.some(s => s.watcher_type === "media");
+  }
+
   // ── render ────────────────────────────────────────────────────────────────
 
   _render(force = false) {
@@ -180,8 +208,8 @@ class EtmPanel extends HTMLElement {
     const totalPages = Math.max(1, Math.ceil(sorted.length / this._pageSize));
     const page       = Math.min(this._page, totalPages);
     if (this._page !== page) this._page = page;
-    const rows       = sorted.slice((page - 1) * this._pageSize, page * this._pageSize);
-    const signature  = this._renderSignature(page);
+    const rows      = sorted.slice((page - 1) * this._pageSize, page * this._pageSize);
+    const signature = this._renderSignature(page);
     if (!force && signature === this._lastRenderSignature) return;
     this._lastRenderSignature = signature;
 
@@ -189,6 +217,8 @@ class EtmPanel extends HTMLElement {
       this._sortBy !== col
         ? `<span class="sh">↕</span>`
         : `<span class="sa">${this._sortAsc ? "↑" : "↓"}</span>`;
+
+    const showGroupBy = this._isMediaSource();
 
     this.shadowRoot.innerHTML = `
 <style>
@@ -215,7 +245,7 @@ select, input[type="text"] {
   border-radius: 4px; color: var(--primary-text-color);
   font: inherit; height: 34px; padding: 0 10px;
 }
-select           { min-width: 130px; }
+select             { min-width: 130px; }
 input[type="text"] { min-width: 180px; }
 input[type="checkbox"] { cursor: pointer; }
 .btn {
@@ -229,6 +259,31 @@ input[type="checkbox"] { cursor: pointer; }
   color: var(--primary-text-color);
 }
 .btn:hover { opacity: .85; }
+
+/* legend */
+.legend {
+  display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 14px;
+}
+.leg-section {
+  background: var(--card-background-color); border-radius: 8px;
+  box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,.12));
+  flex: 1; min-width: 260px; padding: 14px 16px;
+}
+.leg-title {
+  font-size: .85rem; font-weight: 600; letter-spacing: .04em;
+  margin-bottom: 10px; text-transform: uppercase;
+  color: var(--secondary-text-color);
+}
+.leg-table { border-collapse: collapse; font-size: .88rem; width: 100%; }
+.leg-table th {
+  border-bottom: 1px solid var(--divider-color);
+  font-weight: 600; padding: 4px 10px 6px; text-align: left;
+}
+.leg-table td { padding: 5px 10px; border-bottom: 1px solid var(--divider-color); }
+.leg-table tr:last-child td { border-bottom: none; }
+.leg-enum { font-family: var(--code-font-family, monospace); font-weight: 700; width: 46px; }
+.leg-mode { color: var(--secondary-text-color); font-family: var(--code-font-family, monospace); font-size: .82rem; }
+.leg-reserviert td { color: var(--secondary-text-color); font-style: italic; }
 
 /* info line */
 .inf { margin-bottom: 8px; font-size: .85rem; color: var(--secondary-text-color); }
@@ -252,6 +307,15 @@ thead th:hover { filter: brightness(.95); }
 .sa { color: var(--primary-color); }
 td  { border-bottom: 1px solid var(--divider-color); padding: 8px 16px; vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
+
+/* artist group header row */
+tr.artist-hdr td {
+  background: var(--secondary-background-color);
+  border-bottom: 1px solid var(--divider-color);
+  border-left: 3px solid var(--primary-color);
+  color: var(--primary-text-color);
+  font-size: .85rem; font-weight: 600; padding: 6px 16px;
+}
 
 /* row accents */
 tr.zero    td:first-child { border-left: 3px solid var(--warning-color, #ffa600); }
@@ -339,7 +403,15 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   </div>
   <button class="btn btn-p" id="btn-apply">Filter anwenden</button>
   <button class="btn btn-g" id="btn-ref" title="Jetzt aktualisieren">↻</button>
+  ${showGroupBy ? `
+  <div class="fg">
+    <input type="checkbox" id="f-grp"${this._groupByArtist ? " checked" : ""} />
+    <label for="f-grp">Nach Künstler</label>
+  </div>` : ""}
+  <button class="btn btn-g" id="btn-leg">${this._showLegend ? "Legende ▴" : "Legende ▾"}</button>
 </div>
+
+${this._showLegend ? this._legendHtml() : ""}
 
 <div class="inf">
   ${this._loading
@@ -360,9 +432,42 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
     <tbody>
       ${rows.length === 0
         ? `<tr><td class="empty" colspan="4">${this._loading ? "Lädt …" : "Keine Einträge gefunden."}</td></tr>`
-        : rows.map(e => `
-<tr class="${e.enum === 0 ? "zero" : ""}${e.is_current ? " current" : ""}">
-  <td class="key">${this._esc(e.key)}${e.is_current ? '<span class="badge">aktiv</span>' : ""}</td>
+        : this._renderRows(rows)}
+    </tbody>
+  </table>
+</div>
+
+${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
+`;
+
+    this._wire(page, totalPages);
+  }
+
+  // ── row rendering ─────────────────────────────────────────────────────────
+
+  _renderRows(rows) {
+    if (!this._groupByArtist || !this._isMediaSource()) {
+      return rows.map(e => this._rowHtml(e, e.key)).join("");
+    }
+
+    const groups = new Map();
+    for (const e of rows) {
+      const artist = this._artistFrom(e.key) ?? "— Kein Künstler —";
+      if (!groups.has(artist)) groups.set(artist, []);
+      groups.get(artist).push(e);
+    }
+
+    let html = "";
+    for (const [artist, entries] of groups) {
+      html += `<tr class="artist-hdr"><td colspan="4">${this._esc(artist)}</td></tr>`;
+      html += entries.map(e => this._rowHtml(e, this._titleFrom(e.key))).join("");
+    }
+    return html;
+  }
+
+  _rowHtml(e, displayKey) {
+    return `<tr class="${e.enum === 0 ? "zero" : ""}${e.is_current ? " current" : ""}">
+  <td class="key">${this._esc(displayKey)}${e.is_current ? '<span class="badge">aktiv</span>' : ""}</td>
   <td><span class="src">${this._esc(e.source_name)}</span></td>
   <td>
     <div class="enum-cell">
@@ -374,20 +479,51 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
     </div>
   </td>
   <td>${this._rel(e.last_seen)}</td>
-</tr>`).join("")}
+</tr>`;
+  }
+
+  // ── legend ────────────────────────────────────────────────────────────────
+
+  _legendHtml() {
+    const MEDIA = [
+      [0,     "normal",         "Kein besonderer Eingriff"],
+      [1,     "boost",          "Lieblingstitel → Track Boost +0.15"],
+      [2,     "mute",           "Unerwünschter Titel → Lautstärke 0"],
+      ["3–9", "Reserviert",     "Zukünftige Erweiterungen"],
+    ];
+    const GAME = [
+      [0,     "gaming_default", "Unklassifiziert, Standard-Routing"],
+      [1,     "gaming_grind",   "Grinding-Modus, Musik dominant"],
+      [2,     "gaming_headset", "Headset-Modus, immersives Spiel"],
+      ["3–9", "Reserviert",     "Zukünftige Erweiterungen"],
+    ];
+
+    const selectedSrc = this._sources.find(s => s.entry_id === this._filterSource);
+    const types = new Set(
+      selectedSrc ? [selectedSrc.watcher_type] : this._sources.map(s => s.watcher_type)
+    );
+
+    const table = (legend, title) => `
+<div class="leg-section">
+  <div class="leg-title">${title}</div>
+  <table class="leg-table">
+    <thead><tr><th>Enum</th><th>Modus</th><th>Bedeutung</th></tr></thead>
+    <tbody>
+      ${legend.map(([e, m, d]) =>
+        `<tr${typeof e === "string" ? ' class="leg-reserviert"' : ""}>`
+        + `<td class="leg-enum">${e}</td>`
+        + `<td class="leg-mode">${this._esc(m)}</td>`
+        + `<td>${this._esc(d)}</td></tr>`
+      ).join("")}
     </tbody>
   </table>
-</div>
+</div>`;
 
-${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
-`;
+    const sections = [];
+    if (types.has("media") || types.has("activity")) sections.push(table(MEDIA, "Media"));
+    if (types.has("game"))                            sections.push(table(GAME,  "Game / Gaming"));
 
-    this._wire(page, totalPages);
-    if (savedFocus) {
-      this.shadowRoot
-        .querySelector(`.ei[data-eid="${CSS.escape(savedFocus.eid)}"][data-key="${CSS.escape(savedFocus.key)}"]`)
-        ?.focus();
-    }
+    return sections.length ? `<div class="legend">${sections.join("")}</div>` : "";
   }
 
   _pagHtml(page, n) {
@@ -425,6 +561,18 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
     });
     r.querySelector("#btn-ref")?.addEventListener("click", () => this._loadEntries({ showLoading: true }));
 
+    // legend toggle
+    r.querySelector("#btn-leg")?.addEventListener("click", () => {
+      this._showLegend = !this._showLegend;
+      this._render();
+    });
+
+    // group-by-artist toggle
+    r.querySelector("#f-grp")?.addEventListener("change", ev => {
+      this._groupByArtist = ev.target.checked;
+      this._render();
+    });
+
     // sortable headers
     r.querySelector("#th-k")?.addEventListener("click", () => this._toggleSort("key"));
     r.querySelector("#th-e")?.addEventListener("click", () => this._toggleSort("enum"));
@@ -438,12 +586,15 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
       inp.addEventListener("input", () => {
         this._setInputDirty(inp, btn, inp.value !== inp.dataset.original);
       });
-      inp.addEventListener("keydown", ev => {
-        if (ev.key === "Enter") { ev.preventDefault(); this._saveInput(inp); }
-        if (ev.key === "Escape") {
-          inp.value = inp.dataset.original;
-          this._setInputDirty(inp, btn, false);
-          inp.blur();
+      inp.addEventListener("blur", () => {
+        const orig = parseInt(inp.dataset.original, 10);
+        const val  = parseInt(inp.value, 10);
+        if (isNaN(val))         { inp.value = orig; return; }
+        if (val === orig)       return;
+        if (val < 0 || val > 9) {
+          this._toast("Wert muss 0–9 sein", "error");
+          inp.value = orig;
+          return;
         }
       });
     });
@@ -472,13 +623,15 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
 
   _renderSignature(page) {
     return JSON.stringify({
-      sources: this._sources,
-      entries: this._entries,
-      filterSource: this._filterSource,
+      sources:            this._sources,
+      entries:            this._entries,
+      filterSource:       this._filterSource,
       filterUnclassified: this._filterUnclassified,
-      filterSearch: this._filterSearch,
-      sortBy: this._sortBy,
-      sortAsc: this._sortAsc,
+      filterSearch:       this._filterSearch,
+      sortBy:             this._sortBy,
+      sortAsc:            this._sortAsc,
+      groupByArtist:      this._groupByArtist,
+      showLegend:         this._showLegend,
       page,
     });
   }
