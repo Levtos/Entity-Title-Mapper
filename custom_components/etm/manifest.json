@@ -1,6 +1,6 @@
 {
   "domain": "etm",
-  "name": "Entity Title Mapper",
+  "name": "Title Classifier",
   "codeowners": [],
   "config_flow": true,
   "dependencies": [
