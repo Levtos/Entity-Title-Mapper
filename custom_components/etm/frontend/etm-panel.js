@@ -2,6 +2,9 @@
 // Uses Home Assistant WebSocket commands for authenticated ETM access.
 // Number inputs are always visible; Save/Enter persists changes explicitly.
 
+(() => {
+if (customElements.get("etm-panel")) return;
+
 class EtmPanel extends HTMLElement {
   constructor() {
     super();
@@ -663,3 +666,4 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
 }
 
 customElements.define("etm-panel", EtmPanel);
+})();
