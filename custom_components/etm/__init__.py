@@ -463,15 +463,21 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
     async def websocket_get_sources(
         hass: HomeAssistant, connection, msg: dict[str, Any]
     ) -> None:
-        sources = [
-            {
-                "entry_id": entry_id,
-                "name": runtime.name,
-                "watcher_type": runtime.entry.data[CONF_WATCHER_TYPE],
-                "source_entity": runtime.source_entity,
-            }
-            for entry_id, runtime in hass.data.get(DOMAIN, {}).items()
-        ]
+        sources = []
+        for entry_id, runtime in hass.data.get(DOMAIN, {}).items():
+            entries = runtime.store.entries
+            total = len(entries)
+            unmapped = sum(1 for entry in entries.values() if entry.enum == 0)
+            sources.append(
+                {
+                    "entry_id": entry_id,
+                    "name": runtime.name,
+                    "watcher_type": runtime.entry.data[CONF_WATCHER_TYPE],
+                    "source_entity": runtime.source_entity,
+                    "entry_count": total,
+                    "unmapped_count": unmapped,
+                }
+            )
         connection.send_result(msg["id"], sources)
 
     @websocket_api.websocket_command(

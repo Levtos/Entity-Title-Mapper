@@ -5,6 +5,8 @@
 (() => {
 if (customElements.get("etm-panel")) return;
 
+const STORAGE_KEY = "etm-panel-state-v1";
+
 class EtmPanel extends HTMLElement {
   constructor() {
     super();
@@ -22,13 +24,49 @@ class EtmPanel extends HTMLElement {
     this._sortBy  = "last_seen";
     this._sortAsc = false;   // newest first by default
 
-    this._page     = 1;
-    this._pageSize = 100;
+    this._page          = 1;
+    this._pageSize      = 100;   // flat rows per page
+    this._pageSizeGroup = 25;    // artist groups per page when grouped
 
-    this._groupByArtist = false;
-    this._showLegend    = false;
+    this._groupByArtist    = false;
+    this._showLegend       = false;
+    this._collapsedArtists = new Set();
 
+    this._loadState();
     this._lastRenderSignature = null;
+  }
+
+  // ── persistence ───────────────────────────────────────────────────────────
+
+  _loadState() {
+    try {
+      const raw = window.localStorage?.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      if (typeof s.filterSource       === "string")  this._filterSource       = s.filterSource;
+      if (typeof s.filterUnclassified === "boolean") this._filterUnclassified = s.filterUnclassified;
+      if (typeof s.filterSearch       === "string")  this._filterSearch       = s.filterSearch;
+      if (typeof s.sortBy             === "string")  this._sortBy             = s.sortBy;
+      if (typeof s.sortAsc            === "boolean") this._sortAsc            = s.sortAsc;
+      if (typeof s.groupByArtist      === "boolean") this._groupByArtist      = s.groupByArtist;
+      if (typeof s.showLegend         === "boolean") this._showLegend         = s.showLegend;
+      if (Array.isArray(s.collapsedArtists))         this._collapsedArtists   = new Set(s.collapsedArtists);
+    } catch { /* ignore corrupt state */ }
+  }
+
+  _saveState() {
+    try {
+      window.localStorage?.setItem(STORAGE_KEY, JSON.stringify({
+        filterSource:       this._filterSource,
+        filterUnclassified: this._filterUnclassified,
+        filterSearch:       this._filterSearch,
+        sortBy:             this._sortBy,
+        sortAsc:            this._sortAsc,
+        groupByArtist:      this._groupByArtist,
+        showLegend:         this._showLegend,
+        collapsedArtists:   [...this._collapsedArtists],
+      }));
+    } catch { /* localStorage unavailable */ }
   }
 
   set hass(h) {
@@ -61,6 +99,11 @@ class EtmPanel extends HTMLElement {
   async _loadSources() {
     try {
       this._sources = await this._ws({ type: "etm/get_sources" });
+      if (this._filterSource && !this._sources.some(s => s.entry_id === this._filterSource)) {
+        // saved source filter no longer exists — drop it silently
+        this._filterSource = "";
+        this._saveState();
+      }
     } catch (err) {
       this._toast(`Quellen konnten nicht geladen werden: ${err.message}`, "error");
     }
@@ -98,7 +141,15 @@ class EtmPanel extends HTMLElement {
       this._setSaving(inputEl, buttonEl, true);
       await this._ws({ type: "etm/update_entry", entry_id: entryId, key, enum_value: value });
       const e = this._entries.find(e => e.entry_id === entryId && e.key === key);
-      if (e) e.enum = value;
+      if (e) {
+        const wasUnmapped = e.enum === 0;
+        const nowUnmapped = value === 0;
+        e.enum = value;
+        if (wasUnmapped !== nowUnmapped) {
+          const src = this._sources.find(s => s.entry_id === entryId);
+          if (src) src.unmapped_count = Math.max(0, (src.unmapped_count ?? 0) + (nowUnmapped ? 1 : -1));
+        }
+      }
       inputEl.dataset.original = String(value);
       inputEl.value = String(value);
       this._setInputDirty(inputEl, buttonEl, false);
@@ -151,7 +202,7 @@ class EtmPanel extends HTMLElement {
 
   // ── sorting ───────────────────────────────────────────────────────────────
 
-  _sorted() {
+  _sortedEntries() {
     const grouping = this._groupByArtist && this._isMediaSource();
     return [...this._entries].sort((a, b) => {
       if (grouping) {
@@ -175,6 +226,7 @@ class EtmPanel extends HTMLElement {
       this._sortBy  = col;
       this._sortAsc = col !== "last_seen";
     }
+    this._saveState();
     this._render();
   }
 
@@ -198,21 +250,65 @@ class EtmPanel extends HTMLElement {
     return this._sources.some(s => s.watcher_type === "media");
   }
 
+  _toggleArtist(artist) {
+    if (this._collapsedArtists.has(artist)) this._collapsedArtists.delete(artist);
+    else this._collapsedArtists.add(artist);
+    this._saveState();
+    this._render();
+  }
+
+  _setAllCollapsed(collapse) {
+    if (!collapse) {
+      this._collapsedArtists.clear();
+    } else {
+      this._collapsedArtists = new Set(
+        this._entries.map(e => this._artistFrom(e.key) ?? "— Kein Künstler —")
+      );
+    }
+    this._saveState();
+    this._render();
+  }
+
+  // ── paginated view model ──────────────────────────────────────────────────
+
+  _viewModel() {
+    const sorted = this._sortedEntries();
+    if (this._groupByArtist && this._isMediaSource()) {
+      const seen  = new Map();
+      const order = [];
+      for (const e of sorted) {
+        const artist = this._artistFrom(e.key) ?? "— Kein Künstler —";
+        if (!seen.has(artist)) { seen.set(artist, []); order.push(artist); }
+        seen.get(artist).push(e);
+      }
+      const groups = order.map(artist => ({
+        artist,
+        entries:   seen.get(artist),
+        collapsed: this._collapsedArtists.has(artist),
+      }));
+      const totalPages = Math.max(1, Math.ceil(groups.length / this._pageSizeGroup));
+      const page       = Math.min(this._page, totalPages);
+      const pageGroups = groups.slice((page - 1) * this._pageSizeGroup, page * this._pageSizeGroup);
+      return {
+        mode: "grouped", groups: pageGroups,
+        totalRows: sorted.length, totalGroups: groups.length,
+        page, totalPages,
+      };
+    }
+    const totalPages = Math.max(1, Math.ceil(sorted.length / this._pageSize));
+    const page       = Math.min(this._page, totalPages);
+    const rows       = sorted.slice((page - 1) * this._pageSize, page * this._pageSize);
+    return { mode: "flat", rows, totalRows: sorted.length, page, totalPages };
+  }
+
   // ── render ────────────────────────────────────────────────────────────────
 
   _render(force = false) {
     if (!this.shadowRoot) return;
 
-    const savedFocus = this.shadowRoot.activeElement?.classList?.contains("ei")
-      ? { eid: this.shadowRoot.activeElement.dataset.eid, key: this.shadowRoot.activeElement.dataset.key }
-      : null;
-
-    const sorted     = this._sorted();
-    const totalPages = Math.max(1, Math.ceil(sorted.length / this._pageSize));
-    const page       = Math.min(this._page, totalPages);
-    if (this._page !== page) this._page = page;
-    const rows      = sorted.slice((page - 1) * this._pageSize, page * this._pageSize);
-    const signature = this._renderSignature(page);
+    const view = this._viewModel();
+    if (this._page !== view.page) this._page = view.page;
+    const signature = this._renderSignature(view);
     if (!force && signature === this._lastRenderSignature) return;
     this._lastRenderSignature = signature;
 
@@ -248,7 +344,7 @@ select, input[type="text"] {
   border-radius: 4px; color: var(--primary-text-color);
   font: inherit; height: 34px; padding: 0 10px;
 }
-select             { min-width: 130px; }
+select             { min-width: 160px; }
 input[type="text"] { min-width: 180px; }
 input[type="checkbox"] { cursor: pointer; }
 .btn {
@@ -290,6 +386,7 @@ input[type="checkbox"] { cursor: pointer; }
 
 /* info line */
 .inf { margin-bottom: 8px; font-size: .85rem; color: var(--secondary-text-color); }
+.inf b { color: var(--primary-text-color); font-weight: 600; }
 
 /* table card */
 .tw {
@@ -311,13 +408,25 @@ thead th:hover { filter: brightness(.95); }
 td  { border-bottom: 1px solid var(--divider-color); padding: 8px 16px; vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 
-/* artist group header row */
+/* artist group header — clickable for collapse/expand */
 tr.artist-hdr td {
   background: var(--secondary-background-color);
   border-bottom: 1px solid var(--divider-color);
   border-left: 3px solid var(--primary-color);
   color: var(--primary-text-color);
+  cursor: pointer;
   font-size: .85rem; font-weight: 600; padding: 6px 16px;
+  user-select: none;
+}
+tr.artist-hdr td:hover { filter: brightness(1.05); }
+tr.artist-hdr .caret {
+  display: inline-block; width: 14px; text-align: center;
+  margin-right: 6px; color: var(--secondary-text-color);
+}
+tr.artist-hdr.collapsed .caret { color: var(--primary-color); }
+tr.artist-hdr .ct {
+  margin-left: 8px; color: var(--secondary-text-color);
+  font-weight: 400; font-size: .8rem;
 }
 
 /* row accents */
@@ -391,10 +500,11 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   <div class="fg">
     Source
     <select id="f-src">
-      <option value="">Alle</option>
-      ${this._sources.map(s =>
-        `<option value="${this._esc(s.entry_id)}"${this._filterSource === s.entry_id ? " selected" : ""}>${this._esc(s.name)}</option>`
-      ).join("")}
+      <option value="">${this._esc(this._allSourcesLabel())}</option>
+      ${this._sources.map(s => {
+        const label = `${s.name} (${s.entry_count ?? 0})`;
+        return `<option value="${this._esc(s.entry_id)}"${this._filterSource === s.entry_id ? " selected" : ""}>${this._esc(label)}</option>`;
+      }).join("")}
     </select>
   </div>
   <div class="fg">
@@ -411,16 +521,15 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
     <input type="checkbox" id="f-grp"${this._groupByArtist ? " checked" : ""} />
     <label for="f-grp">Nach Künstler</label>
   </div>` : ""}
+  ${showGroupBy && this._groupByArtist ? `
+  <button class="btn btn-g" id="btn-coll-all" title="Alle Künstler einklappen">Alle ▸</button>
+  <button class="btn btn-g" id="btn-exp-all"  title="Alle Künstler ausklappen">Alle ▾</button>` : ""}
   <button class="btn btn-g" id="btn-leg">${this._showLegend ? "Legende ▴" : "Legende ▾"}</button>
 </div>
 
 ${this._showLegend ? this._legendHtml() : ""}
 
-<div class="inf">
-  ${this._loading
-    ? "Lädt …"
-    : `${sorted.length} Eintr${sorted.length === 1 ? "ag" : "äge"}${totalPages > 1 ? ` · Seite ${page}/${totalPages}` : ""}`}
-</div>
+<div class="inf">${this._totalsLine(view)}</div>
 
 <div class="tw${this._loading ? " loading" : ""}">
   <table>
@@ -433,39 +542,70 @@ ${this._showLegend ? this._legendHtml() : ""}
       </tr>
     </thead>
     <tbody>
-      ${rows.length === 0
-        ? `<tr><td class="empty" colspan="4">${this._loading ? "Lädt …" : "Keine Einträge gefunden."}</td></tr>`
-        : this._renderRows(rows)}
+      ${this._bodyHtml(view)}
     </tbody>
   </table>
 </div>
 
-${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
+${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
 `;
 
-    this._wire(page, totalPages);
+    this._wire(view.page, view.totalPages);
   }
 
-  // ── row rendering ─────────────────────────────────────────────────────────
+  _allSourcesLabel() {
+    const total = this._sources.reduce((sum, s) => sum + (s.entry_count ?? 0), 0);
+    return total ? `Alle (${total})` : "Alle";
+  }
 
-  _renderRows(rows) {
-    if (!this._groupByArtist || !this._isMediaSource()) {
-      return rows.map(e => this._rowHtml(e, e.key)).join("");
+  _totalsLine(view) {
+    if (this._loading) return "Lädt …";
+    const src = this._sources.find(s => s.entry_id === this._filterSource);
+    const totalEntries = this._filterSource
+      ? src?.entry_count ?? 0
+      : this._sources.reduce((sum, s) => sum + (s.entry_count ?? 0), 0);
+    const totalUnmapped = this._filterSource
+      ? src?.unmapped_count ?? 0
+      : this._sources.reduce((sum, s) => sum + (s.unmapped_count ?? 0), 0);
+
+    const word         = view.totalRows === 1 ? "Eintrag" : "Einträge";
+    const filteredHint = view.totalRows !== totalEntries
+      ? ` (gefiltert aus <b>${totalEntries}</b>)` : "";
+    const groupHint    = view.mode === "grouped" ? ` · ${view.totalGroups} Künstler` : "";
+    const pageHint     = view.totalPages > 1 ? ` · Seite ${view.page}/${view.totalPages}` : "";
+    const unmappedHint = totalUnmapped ? ` · <b>${totalUnmapped}</b> unklassifiziert` : "";
+
+    return `<b>${view.totalRows}</b> ${word}${filteredHint}${groupHint}${pageHint}${unmappedHint}`;
+  }
+
+  // ── body / row rendering ──────────────────────────────────────────────────
+
+  _bodyHtml(view) {
+    if (view.totalRows === 0) {
+      return `<tr><td class="empty" colspan="4">${this._loading ? "Lädt …" : "Keine Einträge gefunden."}</td></tr>`;
     }
-
-    const groups = new Map();
-    for (const e of rows) {
-      const artist = this._artistFrom(e.key) ?? "— Kein Künstler —";
-      if (!groups.has(artist)) groups.set(artist, []);
-      groups.get(artist).push(e);
+    if (view.mode === "flat") {
+      return view.rows.map(e => this._rowHtml(e, e.key)).join("");
     }
-
     let html = "";
-    for (const [artist, entries] of groups) {
-      html += `<tr class="artist-hdr"><td colspan="4">${this._esc(artist)}</td></tr>`;
-      html += entries.map(e => this._rowHtml(e, this._titleFrom(e.key))).join("");
+    for (const g of view.groups) {
+      const caret = g.collapsed ? "▸" : "▾";
+      const stats = this._groupStats(g.entries);
+      html += `<tr class="artist-hdr${g.collapsed ? " collapsed" : ""}" data-artist="${this._esc(g.artist)}">`
+            + `<td colspan="4"><span class="caret">${caret}</span>${this._esc(g.artist)}`
+            + `<span class="ct">${g.entries.length} Titel${stats}</span></td></tr>`;
+      if (!g.collapsed) {
+        html += g.entries.map(e => this._rowHtml(e, this._titleFrom(e.key))).join("");
+      }
     }
     return html;
+  }
+
+  _groupStats(entries) {
+    const unmapped = entries.filter(e => e.enum === 0).length;
+    if (unmapped === 0)              return " · alle klassifiziert";
+    if (unmapped === entries.length) return " · alle unklassifiziert";
+    return ` · ${unmapped} unklassifiziert`;
   }
 
   _rowHtml(e, displayKey) {
@@ -557,6 +697,7 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
       this._filterSource       = r.querySelector("#f-src")?.value ?? "";
       this._filterUnclassified = r.querySelector("#f-unc")?.checked ?? false;
       this._filterSearch       = r.querySelector("#f-s")?.value ?? "";
+      this._saveState();
       this._loadEntries({ resetPage: true });
     });
     r.querySelector("#f-s")?.addEventListener("keydown", ev => {
@@ -567,13 +708,25 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
     // legend toggle
     r.querySelector("#btn-leg")?.addEventListener("click", () => {
       this._showLegend = !this._showLegend;
+      this._saveState();
       this._render();
     });
 
     // group-by-artist toggle
     r.querySelector("#f-grp")?.addEventListener("change", ev => {
       this._groupByArtist = ev.target.checked;
+      this._page = 1;
+      this._saveState();
       this._render();
+    });
+
+    // collapse / expand all artists
+    r.querySelector("#btn-coll-all")?.addEventListener("click", () => this._setAllCollapsed(true));
+    r.querySelector("#btn-exp-all") ?.addEventListener("click", () => this._setAllCollapsed(false));
+
+    // artist header → toggle this group
+    r.querySelectorAll("tr.artist-hdr").forEach(row => {
+      row.addEventListener("click", () => this._toggleArtist(row.dataset.artist));
     });
 
     // sortable headers
@@ -581,7 +734,7 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
     r.querySelector("#th-e")?.addEventListener("click", () => this._toggleSort("enum"));
     r.querySelector("#th-l")?.addEventListener("click", () => this._toggleSort("last_seen"));
 
-    // enum inputs — explicit save button; Enter saves, Escape resets
+    // enum inputs — explicit save button; blur validates
     r.querySelectorAll(".ei").forEach(inp => {
       const btn = r.querySelector(
         `.save-row[data-eid="${CSS.escape(inp.dataset.eid)}"][data-key="${CSS.escape(inp.dataset.key)}"]`
@@ -624,7 +777,7 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
 
   // ── utilities ─────────────────────────────────────────────────────────────
 
-  _renderSignature(page) {
+  _renderSignature(view) {
     return JSON.stringify({
       sources:            this._sources,
       entries:            this._entries,
@@ -635,7 +788,10 @@ ${totalPages > 1 ? this._pagHtml(page, totalPages) : ""}
       sortAsc:            this._sortAsc,
       groupByArtist:      this._groupByArtist,
       showLegend:         this._showLegend,
-      page,
+      collapsed:          [...this._collapsedArtists],
+      mode:               view.mode,
+      page:               view.page,
+      loading:            this._loading,
     });
   }
 
