@@ -12,6 +12,11 @@ from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_ENUM, STORAGE_KEY_PREFIX, STORAGE_VERSION
 
+# A manual hide should not be undone by the very play that prompted it.
+# Only resurface manually-hidden entries once they've been quiet this
+# long — keeps the currently-playing title hidden after "Ausblenden".
+MANUAL_HIDE_GRACE = timedelta(minutes=5)
+
 
 def utcnow_iso() -> str:
     """Return the current UTC time as an ISO formatted string."""
@@ -113,9 +118,19 @@ class MapperStore:
             self._entries[key] = entry
         entry.last_seen = now
         entry.seen_count += 1
-        # Re-surface an entry that was previously hidden — the source is playing
-        # it again, so the user almost certainly wants to see it.
-        entry.hidden_at = None
+        if entry.hidden_at is not None:
+            # Resurface a manual hide only once the grace window has passed,
+            # otherwise the currently-playing title would un-hide itself the
+            # moment the user clicked "Ausblenden".
+            try:
+                hidden_at_dt = datetime.fromisoformat(entry.hidden_at)
+            except ValueError:
+                entry.hidden_at = None
+            else:
+                if hidden_at_dt.tzinfo is None:
+                    hidden_at_dt = hidden_at_dt.replace(tzinfo=dt_util.UTC)
+                if dt_util.utcnow() - hidden_at_dt >= MANUAL_HIDE_GRACE:
+                    entry.hidden_at = None
         await self.async_save()
         return entry
 
