@@ -12,6 +12,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_ARTIST_ATTRIBUTE,
+    CONF_AUTO_HIDE_HOURS,
     CONF_RETENTION_DAYS,
     CONF_SOURCE_ENTITY,
     CONF_WATCHER_TYPE,
@@ -124,19 +125,36 @@ class EtmOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Edit retention options."""
+        """Edit retention and auto-hide options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        current = self._config_entry.options.get(CONF_RETENTION_DAYS)
-        number_selector = selector.NumberSelector(
+        days_selector = selector.NumberSelector(
             selector.NumberSelectorConfig(min=1, step=1, mode="box")
         )
-        if current is not None:
-            days_field = vol.Optional(CONF_RETENTION_DAYS, default=int(current))
-        else:
-            days_field = vol.Optional(CONF_RETENTION_DAYS)
+        hide_selector = selector.NumberSelector(
+            selector.NumberSelectorConfig(min=0, step=1, mode="box")
+        )
+
+        current_days = self._config_entry.options.get(CONF_RETENTION_DAYS)
+        days_field = (
+            vol.Optional(CONF_RETENTION_DAYS, default=int(current_days))
+            if current_days is not None
+            else vol.Optional(CONF_RETENTION_DAYS)
+        )
+
+        current_hide = self._config_entry.options.get(CONF_AUTO_HIDE_HOURS)
+        hide_field = (
+            vol.Optional(CONF_AUTO_HIDE_HOURS, default=int(current_hide))
+            if current_hide is not None
+            else vol.Optional(CONF_AUTO_HIDE_HOURS)
+        )
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({days_field: number_selector}),
+            data_schema=vol.Schema(
+                {
+                    days_field: days_selector,
+                    hide_field: hide_selector,
+                }
+            ),
         )

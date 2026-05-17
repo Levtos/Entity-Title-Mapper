@@ -9,6 +9,7 @@ CONF_SOURCE_ENTITY = "source_entity"
 CONF_ARTIST_ATTRIBUTE = "artist_attribute"
 CONF_WATCHER_TYPE = "watcher_type"
 CONF_RETENTION_DAYS = "retention_days"
+CONF_AUTO_HIDE_HOURS = "auto_hide_hours"
 
 WATCHER_TYPES = ["game", "media", "activity"]
 DEFAULT_ARTIST_ATTRIBUTE = "media_artist"
@@ -31,7 +32,8 @@ SERVICE_SET_ENUM = "set_enum"
 SERVICE_DELETE_ENTRY = "delete_entry"
 SERVICE_CLEAR_OLD = "clear_old"
 SERVICE_IMPORT_ENTRIES = "import_entries"
+SERVICE_HIDE_UNMAPPED = "hide_unmapped"
 
-PANEL_URL = "/etm_panel_v6.js"
+PANEL_URL = "/etm_panel_v7.js"
 PANEL_TITLE = "Title Classifier"
 PANEL_ICON = "mdi:tag-multiple"

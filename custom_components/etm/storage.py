@@ -27,17 +27,20 @@ class MapperEntry:
     first_seen: str = field(default_factory=utcnow_iso)
     last_seen: str = field(default_factory=utcnow_iso)
     seen_count: int = 0
+    hidden_at: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MapperEntry":
         """Build an entry from stored data."""
         now = utcnow_iso()
+        hidden_at = data.get("hidden_at")
         return cls(
             key=str(data.get("key", "")),
             enum=int(data.get("enum", DEFAULT_ENUM)),
             first_seen=str(data.get("first_seen", now)),
             last_seen=str(data.get("last_seen", now)),
             seen_count=int(data.get("seen_count", 0)),
+            hidden_at=hidden_at if isinstance(hidden_at, str) else None,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -48,7 +51,22 @@ class MapperEntry:
             "first_seen": self.first_seen,
             "last_seen": self.last_seen,
             "seen_count": self.seen_count,
+            "hidden_at": self.hidden_at,
         }
+
+    def is_hidden(self, auto_hide_cutoff: datetime | None) -> bool:
+        """Return whether the entry is hidden under the given cutoff policy."""
+        if self.hidden_at is not None:
+            return True
+        if auto_hide_cutoff is None or self.enum != DEFAULT_ENUM:
+            return False
+        try:
+            last = datetime.fromisoformat(self.last_seen)
+        except ValueError:
+            return False
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=dt_util.UTC)
+        return last < auto_hide_cutoff
 
 
 class MapperStore:
@@ -95,6 +113,9 @@ class MapperStore:
             self._entries[key] = entry
         entry.last_seen = now
         entry.seen_count += 1
+        # Re-surface an entry that was previously hidden — the source is playing
+        # it again, so the user almost certainly wants to see it.
+        entry.hidden_at = None
         await self.async_save()
         return entry
 
@@ -143,7 +164,23 @@ class MapperStore:
             entry = MapperEntry(key=key, first_seen=now, last_seen=now, seen_count=0)
             self._entries[key] = entry
         entry.enum = enum
+        if enum != DEFAULT_ENUM:
+            # Classifying always un-hides — a non-default enum means the user
+            # wants the entry to participate in matching going forward.
+            entry.hidden_at = None
         return entry
+
+    async def async_hide_unmapped(self) -> int:
+        """Hide every unmapped entry that is not already hidden."""
+        now = utcnow_iso()
+        count = 0
+        for entry in self._entries.values():
+            if entry.enum == DEFAULT_ENUM and entry.hidden_at is None:
+                entry.hidden_at = now
+                count += 1
+        if count:
+            await self.async_save()
+        return count
 
     async def async_delete(self, key: str) -> bool:
         """Delete a key and persist when it existed."""

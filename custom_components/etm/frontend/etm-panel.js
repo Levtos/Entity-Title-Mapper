@@ -32,6 +32,12 @@ class EtmPanel extends HTMLElement {
     this._showLegend       = false;
     this._collapsedArtists = new Set();
 
+    this._includeHidden = false;
+    this._acQuery       = "";
+    this._acResults     = [];
+    this._acOpen        = false;
+    this._acTimer       = null;
+
     this._loadState();
     this._lastRenderSignature = null;
   }
@@ -50,6 +56,7 @@ class EtmPanel extends HTMLElement {
       if (typeof s.sortAsc            === "boolean") this._sortAsc            = s.sortAsc;
       if (typeof s.groupByArtist      === "boolean") this._groupByArtist      = s.groupByArtist;
       if (typeof s.showLegend         === "boolean") this._showLegend         = s.showLegend;
+      if (typeof s.includeHidden      === "boolean") this._includeHidden      = s.includeHidden;
       if (Array.isArray(s.collapsedArtists))         this._collapsedArtists   = new Set(s.collapsedArtists);
     } catch { /* ignore corrupt state */ }
   }
@@ -64,6 +71,7 @@ class EtmPanel extends HTMLElement {
         sortAsc:            this._sortAsc,
         groupByArtist:      this._groupByArtist,
         showLegend:         this._showLegend,
+        includeHidden:      this._includeHidden,
         collapsedArtists:   [...this._collapsedArtists],
       }));
     } catch { /* localStorage unavailable */ }
@@ -119,6 +127,7 @@ class EtmPanel extends HTMLElement {
       if (this._filterSource) message.source = this._filterSource;
       if (this._filterUnclassified) message.unclassified = true;
       if (this._filterSearch.trim()) message.search = this._filterSearch.trim();
+      if (this._includeHidden) message.include_hidden = true;
       this._entries = await this._ws(message);
       if (resetPage) this._page = 1;
     } catch (err) {
@@ -143,11 +152,22 @@ class EtmPanel extends HTMLElement {
       const e = this._entries.find(e => e.entry_id === entryId && e.key === key);
       if (e) {
         const wasUnmapped = e.enum === 0;
+        const wasHidden   = !!e.hidden;
         const nowUnmapped = value === 0;
         e.enum = value;
-        if (wasUnmapped !== nowUnmapped) {
-          const src = this._sources.find(s => s.entry_id === entryId);
-          if (src) src.unmapped_count = Math.max(0, (src.unmapped_count ?? 0) + (nowUnmapped ? 1 : -1));
+        if (value !== 0 && wasHidden) {
+          // backend clears hidden_at on classify — reflect that locally
+          e.hidden    = false;
+          e.hidden_at = null;
+        }
+        const src = this._sources.find(s => s.entry_id === entryId);
+        if (src) {
+          if (wasUnmapped !== nowUnmapped) {
+            src.unmapped_count = Math.max(0, (src.unmapped_count ?? 0) + (nowUnmapped ? 1 : -1));
+          }
+          if (value !== 0 && wasHidden) {
+            src.hidden_count = Math.max(0, (src.hidden_count ?? 0) - 1);
+          }
         }
       }
       inputEl.dataset.original = String(value);
@@ -255,6 +275,113 @@ class EtmPanel extends HTMLElement {
     else this._collapsedArtists.add(artist);
     this._saveState();
     this._render();
+  }
+
+  // ── autocomplete (find hidden entries) ────────────────────────────────────
+
+  _acScheduleSearch(query) {
+    clearTimeout(this._acTimer);
+    this._acQuery = query;
+    if (query.trim().length < 2) {
+      this._acResults = [];
+      this._acOpen    = false;
+      this._renderAcDropdown();
+      return;
+    }
+    this._acTimer = setTimeout(() => this._acSearch(query.trim()), 220);
+  }
+
+  async _acSearch(query) {
+    try {
+      const msg = {
+        type: "etm/list_entries",
+        search: query,
+        include_hidden: true,
+        limit: 25,
+      };
+      if (this._filterSource) msg.source = this._filterSource;
+      this._acResults = await this._ws(msg);
+      this._acOpen    = true;
+    } catch (err) {
+      this._toast(`Suche fehlgeschlagen: ${err.message}`, "error");
+      this._acResults = [];
+      this._acOpen    = false;
+    }
+    this._renderAcDropdown();
+  }
+
+  _acClose() {
+    this._acOpen    = false;
+    this._acQuery   = "";
+    this._acResults = [];
+    this._renderAcDropdown();
+    const inp = this.shadowRoot?.querySelector("#ac-input");
+    if (inp) inp.value = "";
+  }
+
+  _acPick(entryId, key) {
+    // Bring the picked entry into the main view by jumping to that source +
+    // exact-match search and turning on hidden inclusion. The user can then
+    // assign an enum like with any other row.
+    this._filterSource       = entryId;
+    this._filterSearch       = key;
+    this._filterUnclassified = false;
+    this._includeHidden      = true;
+    this._page               = 1;
+    this._saveState();
+    this._acClose();
+    this._loadEntries({ resetPage: true, showLoading: true });
+    this._toast("Eintrag in die Liste geholt", "success");
+  }
+
+  _renderAcDropdown() {
+    const dd = this.shadowRoot?.querySelector(".ac-dd");
+    if (!dd) return;
+    if (!this._acOpen || this._acResults.length === 0) {
+      dd.hidden = true;
+      dd.innerHTML = "";
+      return;
+    }
+    dd.hidden = false;
+    dd.innerHTML = this._acResults.map(r => `
+      <div class="ac-item" data-eid="${this._esc(r.entry_id)}" data-key="${this._esc(r.key)}">
+        <span class="ac-key">${this._esc(r.key)}</span>
+        <span class="ac-meta">
+          ${this._esc(r.source_name)} · Wert ${r.enum}${r.hidden ? " · versteckt" : ""}
+          · zuletzt ${this._rel(r.last_seen)}
+        </span>
+      </div>`).join("");
+    dd.querySelectorAll(".ac-item").forEach(el => {
+      el.addEventListener("mousedown", ev => {
+        ev.preventDefault();
+        this._acPick(el.dataset.eid, el.dataset.key);
+      });
+    });
+  }
+
+  // ── bulk hide unmapped ────────────────────────────────────────────────────
+
+  async _hideUnmapped() {
+    if (!this._filterSource) {
+      this._toast("Bitte zuerst eine Source wählen", "error");
+      return;
+    }
+    const src = this._sources.find(s => s.entry_id === this._filterSource);
+    const n = src?.unmapped_count ?? 0;
+    if (n === 0) {
+      this._toast("Keine unklassifizierten Einträge zum Ausblenden", "info");
+      return;
+    }
+    if (!window.confirm(`${n} unklassifizierte Einträge in „${src?.name ?? "?"}\" ausblenden?\n\nDie Einträge bleiben in der Datenbank — werden sie wieder gespielt, tauchen sie automatisch wieder auf.`)) {
+      return;
+    }
+    try {
+      const res = await this._ws({ type: "etm/hide_unmapped", entry_id: this._filterSource });
+      this._toast(`${res?.hidden ?? 0} Einträge ausgeblendet`, "success");
+      await Promise.all([this._loadSources(), this._loadEntries({ showLoading: true })]);
+    } catch (err) {
+      this._toast(`Ausblenden fehlgeschlagen: ${err.message}`, "error");
+    }
   }
 
   _setAllCollapsed(collapse) {
@@ -478,6 +605,43 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
 .pag .btn { min-width: 36px; padding: 0 8px; }
 .pag .act { background: var(--primary-color); color: var(--text-primary-color, #fff); border-color: var(--primary-color); }
 
+/* hidden-row dimming when "Versteckte zeigen" is on */
+tr.is-hidden td { opacity: .55; }
+tr.is-hidden td .src,
+tr.is-hidden td .key { font-style: italic; }
+
+/* autocomplete row */
+.ac-bar {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 14px;
+}
+.ac-wrap { position: relative; flex: 1; min-width: 240px; max-width: 520px; }
+.ac-wrap input {
+  background: var(--input-fill-color, var(--secondary-background-color));
+  border: 1px solid var(--input-ink-color, var(--secondary-text-color));
+  border-radius: 4px; color: var(--primary-text-color);
+  font: inherit; height: 34px; padding: 0 10px; width: 100%; box-sizing: border-box;
+}
+.ac-hint {
+  color: var(--secondary-text-color); font-size: .8rem;
+}
+.ac-dd {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+  background: var(--card-background-color);
+  border: 1px solid var(--divider-color); border-radius: 4px;
+  margin-top: 2px; max-height: 320px; overflow-y: auto;
+  box-shadow: 0 4px 14px rgba(0,0,0,.25);
+}
+.ac-item {
+  cursor: pointer; padding: 8px 12px;
+  border-bottom: 1px solid var(--divider-color);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.ac-item:last-child  { border-bottom: none; }
+.ac-item:hover       { background: var(--secondary-background-color); }
+.ac-key  { font-family: var(--code-font-family, monospace); font-size: .88rem; }
+.ac-meta { color: var(--secondary-text-color); font-size: .75rem; }
+
 /* empty state */
 .empty { color: var(--secondary-text-color); padding: 40px; text-align: center; }
 
@@ -524,8 +688,16 @@ tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent
   ${showGroupBy && this._groupByArtist ? `
   <button class="btn btn-g" id="btn-coll-all" title="Alle Künstler einklappen">Alle ▸</button>
   <button class="btn btn-g" id="btn-exp-all"  title="Alle Künstler ausklappen">Alle ▾</button>` : ""}
+  ${this._anyAutoHide() ? `
+  <div class="fg">
+    <input type="checkbox" id="f-hid"${this._includeHidden ? " checked" : ""} />
+    <label for="f-hid">Versteckte zeigen</label>
+  </div>` : ""}
+  ${this._hideButtonHtml()}
   <button class="btn btn-g" id="btn-leg">${this._showLegend ? "Legende ▴" : "Legende ▾"}</button>
 </div>
+
+${this._acBarHtml()}
 
 ${this._showLegend ? this._legendHtml() : ""}
 
@@ -558,6 +730,39 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
     return total ? `Alle (${total})` : "Alle";
   }
 
+  _anyAutoHide() {
+    return this._sources.some(s => (s.auto_hide_hours ?? 0) > 0 || (s.hidden_count ?? 0) > 0);
+  }
+
+  _hiddenCount() {
+    const src = this._sources.find(s => s.entry_id === this._filterSource);
+    return this._filterSource
+      ? src?.hidden_count ?? 0
+      : this._sources.reduce((sum, s) => sum + (s.hidden_count ?? 0), 0);
+  }
+
+  _hideButtonHtml() {
+    if (!this._filterSource) return "";
+    const src = this._sources.find(s => s.entry_id === this._filterSource);
+    const n = src?.unmapped_count ?? 0;
+    if (n === 0) return "";
+    return `<button class="btn btn-g" id="btn-hide" title="Unklassifizierte Einträge dieser Source ausblenden">Ausblenden (${n})</button>`;
+  }
+
+  _acBarHtml() {
+    if (!this._anyAutoHide()) return "";
+    const hidden = this._hiddenCount();
+    return `
+<div class="ac-bar">
+  <div class="ac-wrap">
+    <input type="text" id="ac-input" placeholder="Eintrag vervollständigen — versteckte Titel suchen …"
+           value="${this._esc(this._acQuery)}" autocomplete="off" />
+    <div class="ac-dd" hidden></div>
+  </div>
+  <span class="ac-hint">${hidden} ausgeblendet · tippen zum Suchen, Klick holt zurück</span>
+</div>`;
+  }
+
   _totalsLine(view) {
     if (this._loading) return "Lädt …";
     const src = this._sources.find(s => s.entry_id === this._filterSource);
@@ -574,8 +779,12 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
     const groupHint    = view.mode === "grouped" ? ` · ${view.totalGroups} Künstler` : "";
     const pageHint     = view.totalPages > 1 ? ` · Seite ${view.page}/${view.totalPages}` : "";
     const unmappedHint = totalUnmapped ? ` · <b>${totalUnmapped}</b> unklassifiziert` : "";
+    const hiddenCount  = this._hiddenCount();
+    const hiddenHint   = hiddenCount
+      ? ` · <b>${hiddenCount}</b> ${this._includeHidden ? "ausgeblendet (sichtbar)" : "ausgeblendet"}`
+      : "";
 
-    return `<b>${view.totalRows}</b> ${word}${filteredHint}${groupHint}${pageHint}${unmappedHint}`;
+    return `<b>${view.totalRows}</b> ${word}${filteredHint}${groupHint}${pageHint}${unmappedHint}${hiddenHint}`;
   }
 
   // ── body / row rendering ──────────────────────────────────────────────────
@@ -609,7 +818,12 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
   }
 
   _rowHtml(e, displayKey) {
-    return `<tr class="${e.enum === 0 ? "zero" : ""}${e.is_current ? " current" : ""}">
+    const cls = [
+      e.enum === 0 ? "zero" : "",
+      e.is_current ? "current" : "",
+      e.hidden ? "is-hidden" : "",
+    ].filter(Boolean).join(" ");
+    return `<tr class="${cls}">
   <td class="key">${this._esc(displayKey)}${e.is_current ? '<span class="badge">aktiv</span>' : ""}</td>
   <td><span class="src">${this._esc(e.source_name)}</span></td>
   <td>
@@ -724,6 +938,34 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
     r.querySelector("#btn-coll-all")?.addEventListener("click", () => this._setAllCollapsed(true));
     r.querySelector("#btn-exp-all") ?.addEventListener("click", () => this._setAllCollapsed(false));
 
+    // "Versteckte zeigen" toggle
+    r.querySelector("#f-hid")?.addEventListener("change", ev => {
+      this._includeHidden = ev.target.checked;
+      this._saveState();
+      this._loadEntries({ showLoading: true });
+    });
+
+    // bulk hide unmapped for the current source
+    r.querySelector("#btn-hide")?.addEventListener("click", () => this._hideUnmapped());
+
+    // autocomplete input (find hidden entries by typing)
+    const acInput = r.querySelector("#ac-input");
+    if (acInput) {
+      acInput.addEventListener("input", ev => this._acScheduleSearch(ev.target.value));
+      acInput.addEventListener("focus", () => {
+        if (this._acResults.length > 0) { this._acOpen = true; this._renderAcDropdown(); }
+      });
+      acInput.addEventListener("blur", () => {
+        // delay close so mousedown on a dropdown item can fire first
+        setTimeout(() => { this._acOpen = false; this._renderAcDropdown(); }, 150);
+      });
+      acInput.addEventListener("keydown", ev => {
+        if (ev.key === "Escape") this._acClose();
+      });
+      // Restore dropdown state across re-renders.
+      if (this._acOpen) this._renderAcDropdown();
+    }
+
     // artist header → toggle this group
     r.querySelectorAll("tr.artist-hdr").forEach(row => {
       row.addEventListener("click", () => this._toggleArtist(row.dataset.artist));
@@ -788,6 +1030,8 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
       sortAsc:            this._sortAsc,
       groupByArtist:      this._groupByArtist,
       showLegend:         this._showLegend,
+      includeHidden:      this._includeHidden,
+      acQuery:            this._acQuery,
       collapsed:          [...this._collapsedArtists],
       mode:               view.mode,
       page:               view.page,
