@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timedelta
 import re
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from homeassistant.core import Event, HomeAssistant, ServiceCall, State, callbac
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ATTR_DELETED,
@@ -25,6 +27,7 @@ from .const import (
     ATTR_ENTRY_ID,
     ATTR_KEY,
     CONF_ARTIST_ATTRIBUTE,
+    CONF_AUTO_HIDE_HOURS,
     CONF_RETENTION_DAYS,
     CONF_SOURCE_ENTITY,
     CONF_WATCHER_TYPE,
@@ -38,6 +41,7 @@ from .const import (
     PLATFORMS,
     SERVICE_CLEAR_OLD,
     SERVICE_DELETE_ENTRY,
+    SERVICE_HIDE_UNMAPPED,
     SERVICE_IMPORT_ENTRIES,
     SERVICE_SET_ENUM,
 )
@@ -122,6 +126,24 @@ class WatcherRuntime:
     def source_entity(self) -> str:
         """Return the watched source entity."""
         return self.entry.data[CONF_SOURCE_ENTITY]
+
+    @property
+    def auto_hide_hours(self) -> int:
+        """Return the configured auto-hide threshold in hours, or 0 for off."""
+        raw = self.entry.options.get(CONF_AUTO_HIDE_HOURS)
+        if raw is None:
+            return 0
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return 0
+
+    def auto_hide_cutoff(self) -> datetime | None:
+        """Return the cutoff before which unmapped entries are auto-hidden."""
+        hours = self.auto_hide_hours
+        if hours <= 0:
+            return None
+        return dt_util.utcnow() - timedelta(hours=hours)
 
     def add_listener(self, update_callback) -> None:
         """Register an entity update listener."""
@@ -468,6 +490,8 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
             entries = runtime.store.entries
             total = len(entries)
             unmapped = sum(1 for entry in entries.values() if entry.enum == 0)
+            cutoff = runtime.auto_hide_cutoff()
+            hidden = sum(1 for entry in entries.values() if entry.is_hidden(cutoff))
             sources.append(
                 {
                     "entry_id": entry_id,
@@ -476,6 +500,8 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
                     "source_entity": runtime.source_entity,
                     "entry_count": total,
                     "unmapped_count": unmapped,
+                    "hidden_count": hidden,
+                    "auto_hide_hours": runtime.auto_hide_hours,
                 }
             )
         connection.send_result(msg["id"], sources)
@@ -486,6 +512,8 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
             vol.Optional("source"): cv.string,
             vol.Optional("unclassified"): bool,
             vol.Optional("search"): cv.string,
+            vol.Optional("include_hidden"): bool,
+            vol.Optional("limit"): vol.All(vol.Coerce(int), vol.Range(min=1, max=1000)),
         }
     )
     @websocket_api.require_admin
@@ -496,15 +524,21 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
         source_filter: str | None = msg.get("source")
         unclassified_only: bool = msg.get("unclassified", False)
         search: str = (msg.get("search") or "").lower().strip()
+        include_hidden: bool = msg.get("include_hidden", False)
+        limit: int | None = msg.get("limit")
 
         result = []
         for entry_id, runtime in hass.data.get(DOMAIN, {}).items():
             if source_filter and entry_id != source_filter:
                 continue
+            cutoff = None if include_hidden else runtime.auto_hide_cutoff()
             for entry in runtime.store.entries.values():
                 if unclassified_only and entry.enum != 0:
                     continue
                 if search and search not in entry.key.lower():
+                    continue
+                hidden = entry.is_hidden(cutoff)
+                if not include_hidden and hidden:
                     continue
                 result.append(
                     {
@@ -517,8 +551,14 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
                         "last_seen": entry.last_seen,
                         "seen_count": entry.seen_count,
                         "is_current": entry.key == runtime.current_key,
+                        "hidden": hidden,
+                        "hidden_at": entry.hidden_at,
                     }
                 )
+                if limit and len(result) >= limit:
+                    break
+            if limit and len(result) >= limit:
+                break
         connection.send_result(msg["id"], result)
 
     @websocket_api.websocket_command(
@@ -540,6 +580,24 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
         await _async_set_enum(runtime, msg[ATTR_KEY], msg["enum_value"])
         connection.send_result(msg["id"], {"success": True})
 
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "etm/hide_unmapped",
+            vol.Required(ATTR_ENTRY_ID): cv.string,
+        }
+    )
+    @websocket_api.require_admin
+    @websocket_api.async_response
+    async def websocket_hide_unmapped(
+        hass: HomeAssistant, connection, msg: dict[str, Any]
+    ) -> None:
+        runtime = _get_runtime(hass, msg[ATTR_ENTRY_ID])
+        count = await runtime.store.async_hide_unmapped()
+        if count:
+            runtime.refresh_current_enum()
+            runtime._notify_listeners()
+        connection.send_result(msg["id"], {"hidden": count})
+
     websocket_api.async_register_command(hass, websocket_list)
     websocket_api.async_register_command(hass, websocket_set_enum)
     websocket_api.async_register_command(hass, websocket_delete_entry)
@@ -547,6 +605,7 @@ def _async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_get_sources)
     websocket_api.async_register_command(hass, websocket_list_entries)
     websocket_api.async_register_command(hass, websocket_update_entry)
+    websocket_api.async_register_command(hass, websocket_hide_unmapped)
 
 
 async def _async_register_panel(hass: HomeAssistant) -> None:

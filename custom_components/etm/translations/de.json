@@ -25,7 +25,8 @@
       "init": {
         "title": "ETM-Watcher-Optionen",
         "data": {
-          "retention_days": "Retention-Tage"
+          "retention_days": "Retention-Tage",
+          "auto_hide_hours": "Auto-Hide nach N Stunden (0 = aus)"
         }
       }
     }
