@@ -344,8 +344,12 @@ class EtmPanel extends HTMLElement {
     }
     dd.hidden = false;
     dd.innerHTML = this._acResults.map(r => `
-      <div class="ac-item" data-eid="${this._esc(r.entry_id)}" data-key="${this._esc(r.key)}">
-        <span class="ac-key">${this._esc(r.key)}</span>
+      <div class="ac-item" data-watcher="${this._esc(r.watcher_type || "")}"
+           data-eid="${this._esc(r.entry_id)}" data-key="${this._esc(r.key)}">
+        <span class="ac-row">
+          <span class="enum-dot" data-enum="${r.enum}"></span>
+          <span class="ac-key">${this._esc(r.key)}</span>
+        </span>
         <span class="ac-meta">
           ${this._esc(r.source_name)} · Wert ${r.enum}${r.hidden ? " · versteckt" : ""}
           · zuletzt ${this._rel(r.last_seen)}
@@ -454,6 +458,23 @@ class EtmPanel extends HTMLElement {
   background: var(--primary-background-color);
   min-height: 100%; box-sizing: border-box;
   font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
+
+  /* Dracula-inspired enum palette in rainbow order (0 = neutral) */
+  --etm-enum-0: #6272a4; /* comment grey-blue */
+  --etm-enum-1: #ff5555; /* red */
+  --etm-enum-2: #ffb86c; /* orange */
+  --etm-enum-3: #f1fa8c; /* yellow */
+  --etm-enum-4: #50fa7b; /* green */
+  --etm-enum-5: #8be9fd; /* cyan */
+  --etm-enum-6: #bd93f9; /* purple */
+  --etm-enum-7: #ff79c6; /* pink */
+  --etm-enum-8: #f8f8f2; /* foreground / white */
+  --etm-enum-9: #44475a; /* dark selection */
+
+  /* Watcher categories — left rail colour per source kind */
+  --etm-cat-media:    #bd93f9;
+  --etm-cat-game:     #50fa7b;
+  --etm-cat-activity: #ffb86c;
 }
 h1 { margin: 0 0 20px; font-size: 1.5rem; font-weight: 400; }
 
@@ -507,7 +528,13 @@ input[type="checkbox"] { cursor: pointer; }
 }
 .leg-table td { padding: 5px 10px; border-bottom: 1px solid var(--divider-color); }
 .leg-table tr:last-child td { border-bottom: none; }
-.leg-enum { font-family: var(--code-font-family, monospace); font-weight: 700; width: 46px; }
+.leg-enum {
+  font-family: var(--code-font-family, monospace); font-weight: 700; width: 64px;
+  display: flex; align-items: center; gap: 8px;
+}
+.leg-enum .enum-dot { width: 10px; height: 10px; }
+.leg-cat-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.leg-cat-swatch { width: 14px; height: 14px; border-radius: 3px; }
 .leg-mode { color: var(--secondary-text-color); font-family: var(--code-font-family, monospace); font-size: .82rem; }
 .leg-reserviert td { color: var(--secondary-text-color); font-style: italic; }
 
@@ -556,9 +583,32 @@ tr.artist-hdr .ct {
   font-weight: 400; font-size: .8rem;
 }
 
-/* row accents */
-tr.zero    td:first-child { border-left: 3px solid var(--warning-color, #ffa600); }
+/* row accents — left rail by watcher category */
+tr[data-watcher="media"]    td:first-child { border-left: 3px solid var(--etm-cat-media);    }
+tr[data-watcher="game"]     td:first-child { border-left: 3px solid var(--etm-cat-game);     }
+tr[data-watcher="activity"] td:first-child { border-left: 3px solid var(--etm-cat-activity); }
 tr.current { background: color-mix(in srgb, var(--primary-color) 7%, transparent); }
+
+/* enum-value colour dot next to the number input */
+.enum-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--etm-enum-0);
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  flex-shrink: 0;
+}
+.enum-dot[data-enum="0"] { background: var(--etm-enum-0); }
+.enum-dot[data-enum="1"] { background: var(--etm-enum-1); }
+.enum-dot[data-enum="2"] { background: var(--etm-enum-2); }
+.enum-dot[data-enum="3"] { background: var(--etm-enum-3); }
+.enum-dot[data-enum="4"] { background: var(--etm-enum-4); }
+.enum-dot[data-enum="5"] { background: var(--etm-enum-5); }
+.enum-dot[data-enum="6"] { background: var(--etm-enum-6); }
+.enum-dot[data-enum="7"] { background: var(--etm-enum-7); }
+.enum-dot[data-enum="8"] { background: var(--etm-enum-8); }
+.enum-dot[data-enum="9"] { background: var(--etm-enum-9); }
+
+/* unclassified marker now lives on the input, not the row rail */
+tr.zero .ei { border-color: var(--warning-color, #ffa600); }
 
 /* cells */
 .key {
@@ -633,12 +683,17 @@ tr.is-hidden td .key { font-style: italic; }
   box-shadow: 0 4px 14px rgba(0,0,0,.25);
 }
 .ac-item {
-  cursor: pointer; padding: 8px 12px;
+  cursor: pointer; padding: 8px 12px 8px 9px;
   border-bottom: 1px solid var(--divider-color);
+  border-left: 3px solid transparent;
   display: flex; flex-direction: column; gap: 2px;
 }
+.ac-item[data-watcher="media"]    { border-left-color: var(--etm-cat-media); }
+.ac-item[data-watcher="game"]     { border-left-color: var(--etm-cat-game); }
+.ac-item[data-watcher="activity"] { border-left-color: var(--etm-cat-activity); }
 .ac-item:last-child  { border-bottom: none; }
 .ac-item:hover       { background: var(--secondary-background-color); }
+.ac-row { display: flex; align-items: center; gap: 8px; }
 .ac-key  { font-family: var(--code-font-family, monospace); font-size: .88rem; }
 .ac-meta { color: var(--secondary-text-color); font-size: .75rem; }
 
@@ -823,11 +878,13 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
       e.is_current ? "current" : "",
       e.hidden ? "is-hidden" : "",
     ].filter(Boolean).join(" ");
-    return `<tr class="${cls}">
+    const watcher = this._esc(e.watcher_type || "");
+    return `<tr class="${cls}" data-watcher="${watcher}">
   <td class="key">${this._esc(displayKey)}${e.is_current ? '<span class="badge">aktiv</span>' : ""}</td>
   <td><span class="src">${this._esc(e.source_name)}</span></td>
   <td>
     <div class="enum-cell">
+      <span class="enum-dot" data-enum="${e.enum}"></span>
       <input class="ei" type="number" min="0" max="9" step="1"
              value="${e.enum}" data-original="${e.enum}"
              data-eid="${this._esc(e.entry_id)}" data-key="${this._esc(e.key)}" />
@@ -860,6 +917,11 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
       selectedSrc ? [selectedSrc.watcher_type] : this._sources.map(s => s.watcher_type)
     );
 
+    const enumCell = (e) => {
+      if (typeof e === "string") return `<td class="leg-enum">${e}</td>`;
+      return `<td class="leg-enum"><span class="enum-dot" data-enum="${e}"></span>${e}</td>`;
+    };
+
     const table = (legend, title) => `
 <div class="leg-section">
   <div class="leg-title">${title}</div>
@@ -868,7 +930,7 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
     <tbody>
       ${legend.map(([e, m, d]) =>
         `<tr${typeof e === "string" ? ' class="leg-reserviert"' : ""}>`
-        + `<td class="leg-enum">${e}</td>`
+        + enumCell(e)
         + `<td class="leg-mode">${this._esc(m)}</td>`
         + `<td>${this._esc(d)}</td></tr>`
       ).join("")}
@@ -876,7 +938,17 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
   </table>
 </div>`;
 
+    const catLabels = { media: "Media", game: "Game / Gaming", activity: "Activity" };
+    const catRows = [...types]
+      .filter(t => catLabels[t])
+      .map(t => `<div class="leg-cat-row"><span class="leg-cat-swatch" style="background: var(--etm-cat-${t})"></span>${catLabels[t]}</div>`)
+      .join("");
+    const catSection = catRows
+      ? `<div class="leg-section"><div class="leg-title">Kategorie-Streifen</div>${catRows}</div>`
+      : "";
+
     const sections = [];
+    if (catSection)                                   sections.push(catSection);
     if (types.has("media") || types.has("activity")) sections.push(table(MEDIA, "Media"));
     if (types.has("game"))                            sections.push(table(GAME,  "Game / Gaming"));
 
@@ -981,8 +1053,13 @@ ${view.totalPages > 1 ? this._pagHtml(view.page, view.totalPages) : ""}
       const btn = r.querySelector(
         `.save-row[data-eid="${CSS.escape(inp.dataset.eid)}"][data-key="${CSS.escape(inp.dataset.key)}"]`
       );
+      const dot = inp.parentElement?.querySelector(".enum-dot");
       inp.addEventListener("input", () => {
         this._setInputDirty(inp, btn, inp.value !== inp.dataset.original);
+        if (dot) {
+          const v = parseInt(inp.value, 10);
+          dot.dataset.enum = (Number.isInteger(v) && v >= 0 && v <= 9) ? String(v) : "0";
+        }
       });
       inp.addEventListener("blur", () => {
         const orig = parseInt(inp.dataset.original, 10);

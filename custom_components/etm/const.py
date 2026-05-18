@@ -34,6 +34,6 @@ SERVICE_CLEAR_OLD = "clear_old"
 SERVICE_IMPORT_ENTRIES = "import_entries"
 SERVICE_HIDE_UNMAPPED = "hide_unmapped"
 
-PANEL_URL = "/etm_panel_v7.js"
+PANEL_URL = "/etm_panel_v8.js"
 PANEL_TITLE = "Title Classifier"
 PANEL_ICON = "mdi:tag-multiple"
